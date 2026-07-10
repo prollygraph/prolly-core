@@ -1,0 +1,133 @@
+// The pack-protocol wire format for the engine ring's gRPC transport.
+//
+// The pack body rides as raw bytes carrying the exact `SyncPackCodec`
+// serialization — the same bytes the in-process protocol hands to
+// `DatabasePackSync.apply`/`integrate`, so the wire adds no second codec and
+// no second integrity surface (every chunk's content address is re-verified
+// at parse).
+//
+// Transfer is FRAMED STREAMING, not unary: `FetchPack` server-streams and
+// `ReceivePack` client-streams ~1 MiB slices of the serialized pack, so the
+// transport imposes no message-size ceiling on pack size. (The pack still
+// materializes in memory on both sides — `SyncPack` is an in-memory chunk
+// list; incremental pack streaming is future work.) This deliberately
+// diverges from the upstream RDF-face transport's four unary RPCs: that
+// design mirrored its REST endpoints 1:1; a standalone transport has no REST
+// twin to mirror and should not inherit gRPC's default unary message cap.
+//
+// Hashes are `bytes` (the engine's 20-byte content addresses). `repo_id`
+// selects a store on a multi-repo host; single-repo hosts accept the empty
+// string. This wire is NOT compatible with the RDF face's `prolly.sync.v1`
+// (different semantics: that protocol also moves RDF-face sidecars) — the
+// two services can coexist on one classpath. Pre-1.0: this format evolves
+// freely, no compatibility contract.
+
+syntax = "proto3";
+
+package prollycore.sync.v1;
+
+option java_package = "com.earasoft.prolly.sync.grpc";
+option java_outer_classname = "PackSyncProto";
+option java_multiple_files = true;
+
+service PackSync {
+  // Advertise the host's branches for one repo: branch name -> commit hash.
+  rpc AdvertiseRefs(AdvertiseRefsRequest) returns (AdvertiseRefsResponse);
+
+  // Build a pack of everything reachable from `branch` that is not reachable
+  // from `have`, and stream it back. The first frame is the header (the
+  // remote head the pack was built at); subsequent frames carry the
+  // SyncPackCodec bytes.
+  rpc FetchPack(FetchPackRequest) returns (stream FetchPackFrame);
+
+  // Deliver a pack AND move the branch ref in one call — the server runs the
+  // pack protocol's full apply: stage chunks, verify the new head's closure
+  // is fully readable (torn-pack hardening — the ref never moves onto an
+  // incomplete pack), then compare-and-set the ref under the store's write
+  // lock. First frame is the header (routing + the ref move); subsequent
+  // frames carry the SyncPackCodec bytes. Limits are enforced as frames
+  // accumulate, BEFORE parse; a breach fails with RESOURCE_EXHAUSTED. A lost
+  // compare-and-set race is a normal response (`updated = false`) — staged
+  // chunks are content-addressed and idempotent, so the retry pack is cheap.
+  rpc ReceivePack(stream ReceivePackFrame) returns (ReceivePackResponse);
+
+  // Compare-and-set a branch ref. A failed CAS is NOT an error — it is a
+  // normal response with `updated = false` (the retryable lost-race
+  // outcome) carrying the current value.
+  rpc CompareAndSetRef(CompareAndSetRefRequest) returns (CompareAndSetRefResponse);
+}
+
+// -- AdvertiseRefs ----------------------------------------------------------
+
+message AdvertiseRefsRequest {
+  string repo_id = 1;
+}
+
+message AdvertiseRefsResponse {
+  // Branch name -> commit hash (20 bytes).
+  map<string, bytes> refs = 1;
+}
+
+// -- FetchPack --------------------------------------------------------------
+
+message FetchPackRequest {
+  string repo_id = 1;
+  // The branch whose history the caller wants.
+  string branch = 2;
+  // Commit hashes the caller already has (reachable subtrees are pruned).
+  repeated bytes have = 3;
+}
+
+message FetchPackFrame {
+  oneof frame {
+    FetchPackHeader header = 1; // always the first frame
+    bytes data = 2;             // a slice of the SyncPackCodec serialization
+  }
+}
+
+message FetchPackHeader {
+  // The commit hash `branch` pointed at when the pack was built (empty when
+  // the branch does not exist — the pack that follows is empty too).
+  bytes head = 1;
+}
+
+// -- ReceivePack ------------------------------------------------------------
+
+message ReceivePackFrame {
+  oneof frame {
+    ReceivePackHeader header = 1; // always the first frame
+    bytes data = 2;               // a slice of the SyncPackCodec serialization
+  }
+}
+
+message ReceivePackHeader {
+  string repo_id = 1;
+  string branch = 2;
+  // The head the pack advances the branch to.
+  bytes new_head = 3;
+  // Expected current value; empty means "create — the branch must not exist".
+  bytes expected_old = 4;
+}
+
+message ReceivePackResponse {
+  // False on a lost compare-and-set race (retryable, not an error).
+  bool updated = 1;
+  // The branch's value AFTER the operation (the winner's on a lost race).
+  bytes current = 2;
+}
+
+// -- CompareAndSetRef -------------------------------------------------------
+
+message CompareAndSetRefRequest {
+  string repo_id = 1;
+  string branch = 2;
+  // Expected current value; empty means "create — the branch must not exist".
+  bytes expected_old = 3;
+  bytes new_value = 4;
+}
+
+message CompareAndSetRefResponse {
+  bool updated = 1;
+  // The branch's value AFTER the operation (the winner's value on a lost race).
+  bytes current = 2;
+}

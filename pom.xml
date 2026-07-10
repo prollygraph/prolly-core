@@ -1,0 +1,627 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+
+  <!-- io.github.prollygraph: the Maven-Central-verifiable namespace for the
+       github.com/prollygraph org (io.github.<owner> is provable by construction).
+       Renamed from the monorepo's com.dolthub at export — the Java packages keep
+       com.dolthub.prolly.* as ported-code attribution (groupId ≠ package). -->
+  <groupId>io.github.prollygraph</groupId>
+  <artifactId>prolly-parent</artifactId>
+  <version>0.2.0-BETA</version>
+  <packaging>pom</packaging>
+
+  <name>prolly-core — prolly-tree engine parent</name>
+  <description>Parent + build gates for the prolly-tree engine: a Java port of Dolt's
+    prolly tree (content-addressed, probabilistically balanced search trees).</description>
+  <url>https://github.com/prollygraph/prolly-core</url>
+  <licenses>
+    <license>
+      <name>Apache-2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>prollygraph</id>
+      <url>https://github.com/prollygraph</url>
+    </developer>
+  </developers>
+  <scm>
+    <connection>scm:git:https://github.com/prollygraph/prolly-core.git</connection>
+    <developerConnection>scm:git:git@github.com:prollygraph/prolly-core.git</developerConnection>
+    <url>https://github.com/prollygraph/prolly-core</url>
+  </scm>
+
+  <distributionManagement>
+    <repository>
+      <id>github</id> <!-- must match the workflow's server-id -->
+      <name>GitHub Packages — prollygraph/prolly-core</name>
+      <url>https://maven.pkg.github.com/prollygraph/prolly-core</url>
+    </repository>
+  </distributionManagement>
+
+  <modules>
+    <!-- Pruned from the monorepo's 34-module reactor: this repo carries ONLY the
+         dolthub-java-port leaf + the prolly-dependencies BOM (extract experiment,
+         plans/extract-prolly-engine-repo.md — core-only scope, 2026-07-10). -->
+    <module>prolly-dependencies</module>
+    <module>dolthub-java-port</module>
+    <module>prolly-storage</module>
+    <module>prolly-sync</module>
+    <module>prolly-sync-grpc</module>
+    <module>prolly-multistore</module>
+    <module>prolly-concurrency</module>
+    <module>prolly-playground-service</module>
+  </modules>
+
+  <properties>
+    <maven.compiler.source>25</maven.compiler.source>
+    <maven.compiler.target>25</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <jmh.version>1.37</jmh.version>
+    <junit.version>5.10.0</junit.version>
+    <spring-boot.version>4.0.6</spring-boot.version>
+    <grpc.version>1.75.0</grpc.version> <!-- 1.71.0 -> 1.75.0: grpc-netty-shaded GHSA-prj3 8.2 (license-and-cve-gates Step 6) -->
+    <os-maven-plugin.version>1.7.1</os-maven-plugin.version>
+    <!-- Code style: Google Java Format via spotless. `mvn spotless:apply` auto-formats the
+         tree to Google Java Style; `mvn spotless:check` verifies. google-java-format must run
+         on AND parse Java 25, so it tracks a recent version. -->
+    <spotless-maven-plugin.version>2.46.1</spotless-maven-plugin.version>
+    <google-java-format.version>1.35.0</google-java-format.version>
+    <pitest.version>1.20.2</pitest.version>
+    <pitest-junit5.version>1.2.3</pitest-junit5.version>
+    <!-- NullAway per-module switches (null-safety-migration). Defined in MAIN properties (not the
+         errorprone profile) so a *gated* module can override them from its own pom — active-profile
+         properties override project properties, but a child pom's properties override the inherited
+         parent's, which is the precedence the per-module rollout needs. Consumed only by the
+         errorprone profile's -Xplugin arg; harmless when -Perrorprone is off.
+           - nullaway.packages: the packages NullAway checks (default __none__ = inactive repo-wide).
+           - nullaway.severity: WARN (warner) repo-wide; a gated module sets ERROR. -->
+    <nullaway.packages>__none__</nullaway.packages>
+    <nullaway.severity>WARN</nullaway.severity>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- The dependency BOM (ADR-0042). Imported FIRST. Today it is empty and
+           prolly-parent still carries the live version management below; Step 2
+           of plans/dependency-bom-module.md migrates that management INTO the BOM
+           and removes it from here, leaving this import as the sole source. -->
+      <dependency>
+        <groupId>io.github.prollygraph</groupId>
+        <artifactId>prolly-dependencies</artifactId>
+        <version>${project.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <!-- rocksdbjni / flatbuffers-java / caffeine moved to the
+           prolly-dependencies BOM (ADR-0042). jmh-* stay below (jmh.version is
+           also used by an annotation-processor path that can't read the BOM). -->
+      <dependency>
+        <groupId>org.openjdk.jmh</groupId>
+        <artifactId>jmh-core</artifactId>
+        <version>${jmh.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.openjdk.jmh</groupId>
+        <artifactId>jmh-generator-annprocess</artifactId>
+        <version>${jmh.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <!-- Convergence pins for the maven-enforcer dependencyConvergence gate
+           (plans/maven-production-quality-gates.md Step 4): these two transitives arrived in multiple
+           versions across the reactor (error_prone 2.21.1/2.30.0/2.41.0; jline 3.25.1/3.26.1). Pin each
+           to the highest so every dependency path converges. -->
+      <dependency>
+        <groupId>com.google.errorprone</groupId>
+        <artifactId>error_prone_annotations</artifactId>
+        <version>2.41.0</version>
+      </dependency>
+      <dependency>
+        <groupId>org.jline</groupId>
+        <artifactId>jline</artifactId>
+        <version>3.26.1</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>2.21.4</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>2.21.4</version>
+      </dependency>
+      <dependency>
+        <groupId>tools.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>3.1.4</version> <!-- 3.1.2 (Boot 4.0.6) carried GHSA-j3rv/-rmj7 8.1 -->
+      </dependency>
+      <dependency>
+        <groupId>tools.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>3.1.4</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-core</artifactId>
+        <version>11.0.22</version> <!-- 11.0.21 (Boot 4.0.6) carried GHSA-h6fc/-r29c 9.8 (CRITICAL) -->
+      </dependency>
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-el</artifactId>
+        <version>11.0.22</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-websocket</artifactId>
+        <version>11.0.22</version>
+      </dependency>
+      <dependency>
+        <groupId>commons-beanutils</groupId>
+        <artifactId>commons-beanutils</artifactId>
+        <version>1.11.0</version> <!-- 1.9.4 carried CVE-2025-48734 8.8 -->
+      </dependency>
+      <dependency>
+        <groupId>org.apache.commons</groupId>
+        <artifactId>commons-lang3</artifactId>
+        <version>3.18.0</version> <!-- 3.12.0 carried GHSA-j288 6.5 (below-gate, cheap) -->
+      </dependency>
+      <!-- jqwik moved to the prolly-dependencies BOM (ADR-0042). -->
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.11.0</version>
+          <configuration>
+            <release>25</release>
+            <parameters>true</parameters>
+          </configuration>
+        </plugin>
+        <!-- Dependency CVE check (security): audits dependencies against Sonatype OSS Index for known
+             vulnerabilities. WARNER-first (`fail=false`) and deliberately NOT bound to a lifecycle phase —
+             it hits the network, so it must never burden or flake the normal build. Run on demand or in a
+             scheduled CI job:
+                 mvn org.sonatype.ossindex.maven:ossindex-maven-plugin:audit
+             REQUIRES a free OSS Index account token, or the API returns HTTP 401 and the audit is a SILENT
+             no-op (verified 2026-06-14: the plugin loads + checks the artifacts + reaches the API, then
+             401s without a token). Provide it as an `<id>ossindex</id>` server entry in ~/.m2/settings.xml
+             (username = account email, password = API token), or as masked CI variables. Flip `<fail>` to
+             true + set a CVSS-score threshold to turn it into a gate, once the token is wired and the
+             existing findings are triaged into the suppression list. Lighter than OWASP Dependency-Check
+             (the heavier, more-thorough alternative — it downloads the National Vulnerability Database and
+             needs an NVD API key); see plans/static-analysis-suite.md for where this fits the suite. -->
+        <plugin>
+          <groupId>org.sonatype.ossindex.maven</groupId>
+          <artifactId>ossindex-maven-plugin</artifactId>
+          <version>3.2.0</version>
+          <configuration>
+            <fail>false</fail>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.2.5</version>
+          <configuration>
+            <argLine>--enable-native-access=ALL-UNNAMED -Djava.io.tmpdir=${project.build.directory}</argLine>
+          </configuration>
+        </plugin>
+        <!-- Javadoc generation. As of the Java 25 bump the codebase no longer uses
+             preview features (the only one, the Foreign Function & Memory API,
+             finalized in Java 22), so no enable-preview flag is needed at source
+             level 25. doclint=reference catches unresolved link targets as the
+             why+dependency-map standard
+             (an upstream contributing guide) is
+             propagated. failOnError=false because the reactor is not yet
+             reference-clean end to end: the documented surface passes, but
+             undocumented modules still carry pre-existing broken links, so the
+             gate WARNS rather than breaking the build. Not bound to a lifecycle
+             phase, so it runs only on explicit `mvn javadoc:javadoc` and never
+             slows a normal build. -->
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-javadoc-plugin</artifactId>
+          <version>3.6.3</version>
+          <configuration>
+            <source>25</source>
+            <doclint>reference</doclint>
+            <failOnError>false</failOnError>
+            <!-- the JDK's own documentation tags, used repo-wide by the
+                 why+dependencies Javadoc standard — must be registered or every
+                 use logs "unknown tag" and renders as plain text -->
+            <tags>
+              <tag><name>apiNote</name><placement>a</placement><head>API Note:</head></tag>
+              <tag><name>implSpec</name><placement>a</placement><head>Implementation Requirements:</head></tag>
+              <tag><name>implNote</name><placement>a</placement><head>Implementation Note:</head></tag>
+            </tags>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-enforcer-plugin</artifactId>
+          <version>3.5.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-source-plugin</artifactId>
+          <version>3.3.1</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
+    <plugins>
+      <!-- Activate (without a phase binding) so `mvn javadoc:javadoc` picks up
+           the preview-flag + doclint configuration from pluginManagement above.
+           A bare reference here keeps the version + config in one place. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <executions>
+          <!-- Central-complete publication set: the javadoc JAR attaches on every
+               package (dolthub-maven-central D-3 — unconditional, never profile-gated;
+               a gated attachment is exactly how a release ships without it). -->
+          <execution>
+            <id>attach-javadoc</id>
+            <goals><goal>jar</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>attach-sources</id>
+            <goals><goal>jar-no-fork</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Code style: Google Java Format (spotless), AOSP 4-space variant. Inherited by every module.
+           Auto-format:  mvn spotless:apply       (rewrites the tree to Google Java Style, 4-space)
+           Verify:       mvn spotless:check        (fails on any unformatted file)
+           The whole tree was formatted 2026-06-12 (see .git-blame-ignore-revs), and `check` is bound
+           to `verify` below as a gate. NOTE: the `spotless:` goal prefix does not resolve at the
+           reactor root (its groupId is not a default plugin-group), so format on demand per-module
+           (`mvn -pl <module> spotless:apply`) or fully-qualified
+           (`mvn com.diffplug.spotless:spotless-maven-plugin:${spotless-maven-plugin.version}:apply
+           -pl '!prolly-dependencies'`). -->
+      <plugin>
+        <groupId>com.diffplug.spotless</groupId>
+        <artifactId>spotless-maven-plugin</artifactId>
+        <version>${spotless-maven-plugin.version}</version>
+        <configuration>
+          <java>
+            <!-- Skip flatbuffers-generated sources (regenerated, never hand-edited;
+                 dolthub-java-port/.../serial/). Formatting them would fight the next codegen. -->
+            <excludes>
+              <exclude>**/serial/*.java</exclude>
+            </excludes>
+            <googleJavaFormat>
+              <version>${google-java-format.version}</version>
+              <!-- AOSP = Google Java Format with 4-space indent (matches this codebase's hand
+                   style) rather than GOOGLE's 2-space. Everything else is identical Google style. -->
+              <style>AOSP</style>
+            </googleJavaFormat>
+          </java>
+        </configuration>
+        <executions>
+          <!-- Gate: fail the build at `verify` on any unformatted file. The tree was formatted
+               2026-06-12 (AOSP), so this passes today; it keeps formatting from drifting. Fix with
+               `mvn spotless:apply`. (`test`/`package` run before `verify`, so they are unaffected.) -->
+          <execution>
+            <id>spotless-check</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>dependency-hygiene</id>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <requireJavaVersion>
+                  <version>[25,)</version>
+                </requireJavaVersion>
+                <requireMavenVersion>
+                  <version>[3.9,)</version>
+                </requireMavenVersion>
+                <dependencyConvergence/>
+              </rules>
+              <fail>true</fail>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Software bill of materials (plans/maven-production-quality-gates.md Step 9, Goal #4). makeBom
+           bound to `package`, inherited by every module, so each built artifact ships its own
+           target/bom.json (the cyclonedx-default name — NOT *-cyclonedx.json; verified per Step 9's
+           wrap-up). Not a pass/fail gate — it is the supply-chain
+           inventory the CVE step (Step 10) consumes. A per-module SBOM satisfies "every artifact ships a
+           bill of materials" more directly than a single root aggregate (a deliberate deviation from the
+           step's "aggregate at root" wording — see the wrap-up). `mvn test` skips it (package-phase);
+           `mvn verify` / CI emits them. -->
+      <plugin>
+        <groupId>org.cyclonedx</groupId>
+        <artifactId>cyclonedx-maven-plugin</artifactId>
+        <version>2.9.1</version>
+        <executions>
+          <execution>
+            <id>sbom</id>
+            <phase>package</phase>
+            <goals>
+              <goal>makeBom</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <outputFormat>json</outputFormat>
+        </configuration>
+      </plugin>
+
+      <!-- License-header gate (plans/prepublic/license-and-cve-gates.md Step 1/3). SLASHSTAR_STYLE
+           (the /* */ block, ASF/Java convention for source license headers — D-1/D-7), full Apache
+           body with a literal year (D-8). Template at build/license-header.txt, resolved via
+           maven.multiModuleProjectDirectory so the path is stable from the reactor root across modules
+           (the multi-module gotcha). license:format normalizes; license:check is bound to verify in
+           Step 3 to gate. Generated serial code is excluded; the commercial enterprise module is
+           excluded via license.skip=true in its own pom (a basedir-relative <exclude> can't reach it
+           from this inherited config). Reuse the hardened plugin, never a hand-rolled normalizer (D-6). -->
+      <plugin>
+        <groupId>com.mycila</groupId>
+        <artifactId>license-maven-plugin</artifactId>
+        <version>4.6</version>
+        <configuration>
+          <strictCheck>true</strictCheck>
+          <mapping>
+            <java>SLASHSTAR_STYLE</java>
+          </mapping>
+          <licenseSets>
+            <!-- Dolt ports: code translates specific Dolt Go source (provenance-verified vs Dolt
+                 v2.0.3 — build/dolt-provenance-ledger.md, Step 2). -->
+            <licenseSet>
+              <header>${maven.multiModuleProjectDirectory}/build/license-header-dolt.txt</header>
+              <includes>
+                <include>src/main/java/com/dolthub/prolly/Commit.java</include>
+                <include>src/main/java/com/dolthub/prolly/Cursor.java</include>
+                <include>src/main/java/com/dolthub/prolly/DiffEngine.java</include>
+                <include>src/main/java/com/dolthub/prolly/Encoding.java</include>
+                <include>src/main/java/com/dolthub/prolly/FlatbufferNodeSerializer.java</include>
+                <include>src/main/java/com/dolthub/prolly/ItemAccess.java</include>
+                <include>src/main/java/com/dolthub/prolly/Manifest.java</include>
+                <include>src/main/java/com/dolthub/prolly/MapIterator.java</include>
+                <include>src/main/java/com/dolthub/prolly/MergeEngine.java</include>
+                <include>src/main/java/com/dolthub/prolly/MutableMap.java</include>
+                <include>src/main/java/com/dolthub/prolly/NodeCache.java</include>
+                <include>src/main/java/com/dolthub/prolly/Node.java</include>
+                <include>src/main/java/com/dolthub/prolly/NodeStore.java</include>
+                <include>src/main/java/com/dolthub/prolly/RollingHashSplitter.java</include>
+                <include>src/main/java/com/dolthub/prolly/StaticMap.java</include>
+                <include>src/main/java/com/dolthub/prolly/TreeIter.java</include>
+                <include>src/main/java/com/dolthub/prolly/TreeMutator.java</include>
+                <include>src/main/java/com/dolthub/prolly/TupleBuilder.java</include>
+                <include>src/main/java/com/dolthub/prolly/TupleDescriptor.java</include>
+                <include>src/main/java/com/dolthub/prolly/Tuple.java</include>
+                <include>src/main/java/com/dolthub/prolly/TypeCodec.java</include>
+                <include>src/main/java/com/dolthub/prolly/Type.java</include>
+                <include>src/main/java/com/dolthub/prolly/Varints.java</include>
+              </includes>
+            </licenseSet>
+            <!-- Dolt design-adapted: derived from Dolt's design/model but the code is Java-adapted
+                 (versioning/GC orchestration, standard algos, Java-platform utils). -->
+            <licenseSet>
+              <header>${maven.multiModuleProjectDirectory}/build/license-header-dolt-adapted.txt</header>
+              <includes>
+                <include>src/main/java/com/dolthub/prolly/HashUtils.java</include>
+                <include>src/main/java/com/dolthub/prolly/ReachabilityWalker.java</include>
+                <include>src/main/java/com/dolthub/prolly/ZOrder.java</include>
+                <include>src/main/java/com/earasoft/prolly/Database.java</include>
+                <include>src/main/java/com/earasoft/prolly/GarbageCollector.java</include>
+              </includes>
+            </licenseSet>
+            <!-- buzhash: Earasoft Java reimplementation of the external kch42/buzhash (MIT) algorithm. -->
+            <licenseSet>
+              <header>${maven.multiModuleProjectDirectory}/build/license-header-kch42.txt</header>
+              <includes>
+                <include>src/main/java/com/dolthub/prolly/BuzHash.java</include>
+                <include>src/main/java/com/dolthub/prolly/BuzHashTable.java</include>
+              </includes>
+            </licenseSet>
+            <!-- Earasoft default — everything else; excludes the three credited sets so no double-stamp. -->
+            <licenseSet>
+              <header>${maven.multiModuleProjectDirectory}/build/license-header.txt</header>
+              <includes>
+                <include>**/src/**/*.java</include>
+              </includes>
+              <excludes>
+                <exclude>**/serial/**</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/Commit.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/Cursor.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/DiffEngine.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/Encoding.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/FlatbufferNodeSerializer.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/ItemAccess.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/Manifest.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/MapIterator.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/MergeEngine.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/MutableMap.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/NodeCache.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/Node.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/NodeStore.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/RollingHashSplitter.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/StaticMap.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/TreeIter.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/TreeMutator.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/TupleBuilder.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/TupleDescriptor.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/Tuple.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/TypeCodec.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/Type.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/Varints.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/HashUtils.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/ReachabilityWalker.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/ZOrder.java</exclude>
+                <exclude>src/main/java/com/earasoft/prolly/Database.java</exclude>
+                <exclude>src/main/java/com/earasoft/prolly/GarbageCollector.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/BuzHash.java</exclude>
+                <exclude>src/main/java/com/dolthub/prolly/BuzHashTable.java</exclude>
+              </excludes>
+            </licenseSet>
+          </licenseSets>
+        </configuration>
+        <executions>
+          <!-- Gate (license-and-cve-gates Step 3, D-1/D-5): fail the build at the verify phase on a
+               missing or non-canonical license header. Bound via an execution so it runs the mycila
+               plugin directly — the bare `license:` CLI prefix resolves to org.codehaus.mojo instead. -->
+          <execution>
+            <id>license-check</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <profile>
+      <id>errorprone</id>
+      <!-- nullaway.packages / nullaway.severity defaults live in the parent MAIN <properties> so a
+           gated module can override them from its own pom (profile properties would shadow a child's). -->
+      <build>
+        <pluginManagement>
+          <plugins>
+            <plugin>
+              <groupId>org.apache.maven.plugins</groupId>
+              <artifactId>maven-compiler-plugin</artifactId>
+              <version>3.13.0</version>
+              <configuration>
+                <release>25</release>
+                <parameters>true</parameters>
+                <fork>true</fork>
+                <compilerArgs>
+                  <arg>-XDcompilePolicy=simple</arg>
+                  <arg>--should-stop=ifError=FLOW</arg>
+                  <!-- NullAway (null-safety-migration). Its flags go INSIDE the -Xplugin:ErrorProne
+                       string — ErrorProne parses -Xep:/-XepOpt: from there; a *separate* <arg>-Xep:…</arg>
+                       is seen by javac first, which rejects it as `invalid flag` (the real cause the
+                       Step-10 + later spikes hit, independent of the version/dep work). NullAway only
+                       checks ${nullaway.packages} (default __none__ → inactive).
+                       -XepExcludedPaths skips machine-generated sources (protobuf/gRPC stubs under
+                       target/generated-sources/) from ALL ErrorProne checks: generated code can't carry
+                       @Nullable and must not be gated. Repo-wide + safe — it only removes checks on a
+                       generated dir, so an already-gated module (all at 0) cannot regress; it is the
+                       errorprone analog of the spotless/license generated-source skips (null-safety-rollout
+                       Step 9). -->
+                  <arg>-Xplugin:ErrorProne -XepAllErrorsAsWarnings -XepExcludedPaths:.*/generated-sources/.* -Xep:NullAway:${nullaway.severity} -XepOpt:NullAway:AnnotatedPackages=${nullaway.packages}</arg>
+                  <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED</arg>
+                  <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED</arg>
+                  <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED</arg>
+                  <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED</arg>
+                  <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED</arg>
+                  <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED</arg>
+                  <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED</arg>
+                  <arg>-J--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED</arg>
+                  <arg>-J--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED</arg>
+                  <arg>-J--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED</arg>
+                </compilerArgs>
+                <annotationProcessorPaths combine.children="append">
+                  <path>
+                    <groupId>com.google.errorprone</groupId>
+                    <artifactId>error_prone_core</artifactId>
+                    <version>2.41.0</version>
+                  </path>
+                  <!-- NullAway 0.12.9 is the release built against error_prone_core 2.41.0 (the version
+                       above) — Step-10's 0.12.7 was built against EP 2.38.0. Its dataflow engine
+                       (org.checkerframework:dataflow-nullaway) + checker-qual are RUNTIME-scoped, and
+                       annotationProcessorPaths does NOT resolve runtime-scoped transitive deps, so they
+                       must be listed explicitly or NullAway fails to load. -->
+                  <path>
+                    <groupId>com.uber.nullaway</groupId>
+                    <artifactId>nullaway</artifactId>
+                    <version>0.12.9</version>
+                  </path>
+                  <path>
+                    <groupId>org.checkerframework</groupId>
+                    <artifactId>dataflow-nullaway</artifactId>
+                    <version>3.49.2</version>
+                  </path>
+                  <path>
+                    <groupId>org.checkerframework</groupId>
+                    <artifactId>checker-qual</artifactId>
+                    <version>3.49.2</version>
+                  </path>
+                </annotationProcessorPaths>
+              </configuration>
+            </plugin>
+          </plugins>
+        </pluginManagement>
+      </build>
+    </profile>
+
+    <!-- Maven Central via the Central Publisher Portal (dolthub-maven-central Step 3).
+         Activated ONLY by the central-publish workflow: signs every artifact (GPG) and
+         uploads through the Portal's publishing plugin. Needs (owner-supplied, never in
+         a session/commit): a Portal token as settings server id `central`, and a GPG key
+         (see RELEASING.md "Maven Central"). autoPublish=false — the first releases get a
+         human look in the Portal UI before going live. Local rehearsal without keys:
+         mvn -Pcentral-release -Dgpg.skip=true verify -->
+    <profile>
+      <id>central-release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.7</version>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals><goal>sign</goal></goals>
+                <configuration>
+                  <!-- CI-friendly: passphrase arrives via env, no pinentry prompt -->
+                  <gpgArguments>
+                    <arg>--pinentry-mode</arg>
+                    <arg>loopback</arg>
+                  </gpgArguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.7.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <autoPublish>false</autoPublish>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>

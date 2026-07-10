@@ -1,0 +1,279 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- prolly-storage: the data-shape-agnostic storage layer.
+       Two things live here:
+
+       1. The versioned-store SUBSTRATE — Database, storage/ (RocksNodeStore,
+          RocksManifest), pool/ (DirectBufferPool), monitor/, sync/,
+          GarbageCollector, the integrity / error-injecting node stores, and
+          VCUtils — extracted from the upstream engine per ADR-0060, so the
+          ~12 substrate-only consumers (json, csv, fhir, xbrl, parquet, sheets,
+          ml-models, secrets, feature-flags, audit, urdna2015) stop inheriting
+          upstream query engines they never use. It depends DOWN on
+          dolthub-java-port (the com.dolthub.prolly primitives).
+
+       2. SharedRocksDb (multi-CF wrapper) — carved out 2026-05-27 (Phase 1
+          an upstream extraction step); the
+          direction-neutral leaf BOTH the substrate and the platform layer
+          (upstream platform modules → admin DB for auth/permission
+          state) depend on.
+
+       The module is import-closed against upper layers; a
+       maven-enforcer bannedDependencies rule (ADR-0060 D-7, below) keeps it
+       that way — the substrate boundary cannot silently rot upward. -->
+
+  <parent>
+    <groupId>io.github.prollygraph</groupId>
+    <artifactId>prolly-parent</artifactId>
+    <version>0.2.0-BETA</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <groupId>io.github.prollygraph</groupId>
+  <artifactId>prolly-storage</artifactId>
+  <packaging>jar</packaging>
+  <name>Prolly Storage — shared low-level primitives (core)</name>
+
+  <description>
+    The data-shape-agnostic versioned-store substrate (Database, RocksNodeStore,
+    DirectBufferPool, GarbageCollector, …) plus SharedRocksDb. Depends down
+    on dolthub-java-port; no framework, no servlet, no upper layers. Consumed by upstream engines
+    and the ~12 substrate-only domain modules.
+  </description>
+
+  <properties>
+    <!-- NullAway GATE (null-safety-rollout, Step 1). prolly-storage is fully @Nullable-annotated +
+         NullAway-clean (49 findings -> 0), so it is gated: under -Perrorprone, NullAway checks
+         com.earasoft.prolly (storage's 5 packages, via prefix) at ERROR — AND com.dolthub.prolly so it
+         RESPECTS port-core's @Nullable contract across the dependency boundary (rollout-plan D-4; the two
+         annotation roots share no prefix). Overrides the parent MAIN defaults (nullaway.packages=__none__,
+         nullaway.severity=WARN). The @Nullable vs Objects.requireNonNull discipline is documented in
+         dolthub-java-port/src/main/java/com/dolthub/prolly/package-info.java. -->
+    <nullaway.packages>com.dolthub.prolly,com.earasoft.prolly</nullaway.packages>
+    <nullaway.severity>ERROR</nullaway.severity>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.rocksdb</groupId>
+      <artifactId>rocksdbjni</artifactId>
+    </dependency>
+
+    <!-- The versioned-store substrate (Database, RocksNodeStore, DirectBufferPool, GarbageCollector, …)
+         extracted per ADR-0060; it depends on the Dolt port primitives. -->
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>dolthub-java-port</artifactId>
+    </dependency>
+    <!-- Shared test doubles from dolthub-java-port's test-jar (InMemoryManifest — the ONE in-memory
+         Manifest; consolidated by plans/prepublic/test-only-standin-audit.md Step 3 after the audit
+         found two independent copies). Same mechanism upstream consumers use. -->
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>dolthub-java-port</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <!-- jspecify @Nullable for the NullAway gate (plans/null-safety-rollout.md, Step 1).
+         Compile-scoped, BOM-managed; CLASS-retention (compile-only). -->
+    <dependency>
+      <groupId>org.jspecify</groupId>
+      <artifactId>jspecify</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+    </dependency>
+    <!-- jqwik property-based testing (version managed in the root pom) — the
+         substrate test suite that travelled here per ADR-0060 D-5
+         (Database/GC/NodeStore properties + the deterministic-simulation tests). -->
+    <dependency>
+      <groupId>net.jqwik</groupId>
+      <artifactId>jqwik</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- ADR-0060 D-7: the substrate boundary cannot rot. Fail the build
+           if prolly-storage ever gains an edge to an upstream engine or its
+           libraries — locking in the measured import-closure of the substrate. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>3.5.0</version>
+        <executions>
+          <execution>
+            <id>ban-upper-layer-coupling</id>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <rules>
+                <bannedDependencies>
+                  <excludes>
+                    <exclude>com.earasoft:prolly-rdf</exclude>
+                    <exclude>org.eclipse.rdf4j</exclude>
+                  </excludes>
+                  <message>ADR-0060 D-7: the substrate must not depend upward — no upstream-engine dependency.</message>
+                </bannedDependencies>
+              </rules>
+              <fail>true</fail>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>0.8.14</version>
+        <configuration>
+          <!-- Coverage gate for the substrate (ADR-0060 D-5 — the gates travel with
+               the code). Thresholds pinned JUST BELOW the measured score (D-8) so the
+               gate catches the next regression without failing on day one: measured
+               2026-06-14 = LINE 91.9% / BRANCH 81.2% / INSTRUCTION 90.9%, ratcheted up
+               from the 2026-06-12 baseline (LINE 90.3% / BRANCH 80.2% / INSTRUCTION
+               88.9%) after the RocksNodeStore bulk/read-opt commits had dropped BRANCH
+               to 76% (red) and storage-branch-coverage-gate.md restored it via direct
+               construction-config tests. Bound to `verify` (below) — the default
+               `mvn test` stays fast; CI / `mvn verify` enforces. Re-measure + ratchet
+               up as coverage improves. -->
+          <rules>
+            <rule>
+              <element>BUNDLE</element>
+              <limits>
+                <limit><counter>LINE</counter><value>COVEREDRATIO</value><minimum>0.91</minimum></limit>
+                <limit><counter>BRANCH</counter><value>COVEREDRATIO</value><minimum>0.80</minimum></limit>
+                <limit><counter>INSTRUCTION</counter><value>COVEREDRATIO</value><minimum>0.90</minimum></limit>
+              </limits>
+            </rule>
+          </rules>
+        </configuration>
+        <executions>
+          <execution>
+            <id>jacoco-prepare-agent</id>
+            <goals><goal>prepare-agent</goal></goals>
+          </execution>
+          <execution>
+            <id>jacoco-report</id>
+            <phase>test</phase>
+            <goals><goal>report</goal></goals>
+          </execution>
+          <!-- Coverage gate: fails `mvn verify` if coverage drops below the pinned
+               baseline. Off the default `mvn test` (test < verify). -->
+          <execution>
+            <id>jacoco-check</id>
+            <phase>verify</phase>
+            <goals><goal>check</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>@{argLine} --enable-native-access=ALL-UNNAMED -Djava.io.tmpdir=${project.build.directory}</argLine>
+          <!-- Surefire's default includes match only *Test/*Tests/*TestCase, so the
+               jqwik *Property tests (the substrate's commit-law / GC-reachability /
+               sync-convergence properties) would silently NOT run. List the defaults
+               explicitly + add *Property so the property suite actually executes here.
+               (Project-wide, *Property files are dormant under the default includes —
+               a pre-existing gap tracked separately; prolly-storage does it right.) -->
+          <includes>
+            <include>**/Test*.java</include>
+            <include>**/*Test.java</include>
+            <include>**/*Tests.java</include>
+            <include>**/*TestCase.java</include>
+            <include>**/*Property.java</include>
+          </includes>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+  <!-- -Pmutation: mutation testing for the substrate (ADR-0060 D-5 — the gates
+       travel with the code). Kept in a profile so it is NEVER part
+       of the default `mvn test` — full-module mutation testing here is slow (RocksDB
+       + the property / deterministic-simulation suites), so this is a CI/background
+       job:
+         mvn -o -pl prolly-storage -Pmutation test-compile org.pitest:pitest-maven:mutationCoverage
+       Scope down while iterating, e.g. -DtargetClasses=com.earasoft.prolly.storage.*
+       Report: target/pit-reports/index.html. No build-failing mutationThreshold is
+       pinned yet — per D-8 the gate is set JUST BELOW a *measured* score, captured by
+       the first CI run (do not guess it); dolthub-java-port's 94% is the reference. -->
+  <profiles>
+    <profile>
+      <id>mutation</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.pitest</groupId>
+            <artifactId>pitest-maven</artifactId>
+            <version>1.16.1</version>
+            <dependencies>
+              <dependency>
+                <groupId>org.pitest</groupId>
+                <artifactId>pitest-junit5-plugin</artifactId>
+                <version>1.2.3</version>
+              </dependency>
+              <!-- pitest-junit5-plugin pins junit-platform 1.9.2, binary-skewed
+                   against this project's JUnit 6 (minion fails "OutputDirectory
+                   Creator not available"). Force the 6.0.3 line. -->
+              <dependency>
+                <groupId>org.junit.platform</groupId>
+                <artifactId>junit-platform-launcher</artifactId>
+                <version>6.0.3</version>
+              </dependency>
+              <dependency>
+                <groupId>org.junit.platform</groupId>
+                <artifactId>junit-platform-engine</artifactId>
+                <version>6.0.3</version>
+              </dependency>
+              <dependency>
+                <groupId>org.junit.platform</groupId>
+                <artifactId>junit-platform-commons</artifactId>
+                <version>6.0.3</version>
+              </dependency>
+              <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-engine</artifactId>
+                <version>6.0.3</version>
+              </dependency>
+              <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-api</artifactId>
+                <version>6.0.3</version>
+              </dependency>
+            </dependencies>
+            <configuration>
+              <jvmArgs>
+                <value>--enable-native-access=ALL-UNNAMED</value>
+              </jvmArgs>
+              <!-- Full substrate scope. Override with -DtargetClasses=... for a fast
+                   focused run. -->
+              <targetClasses>
+                <param>com.earasoft.prolly.*</param>
+              </targetClasses>
+              <targetTests>
+                <param>com.earasoft.prolly.*</param>
+              </targetTests>
+              <threads>4</threads>
+              <outputFormats>
+                <param>HTML</param>
+                <param>XML</param>
+              </outputFormats>
+              <timestampedReports>false</timestampedReports>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>

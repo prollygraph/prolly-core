@@ -1,0 +1,4 @@
+- [ ] `mvn verify` green locally (the gates run AFTER `test` — see CONTRIBUTING.md)
+- [ ] behavior changes come with tests (`*Property` files: Surefire include present)
+- [ ] docs that this change disproves are fixed in this PR
+- [ ] no version bump (maintainers coordinate releases — RELEASING.md)

@@ -1,0 +1,18 @@
+Dolt Java Prolly Tree Port
+Copyright 2026 Earasoft
+
+This product includes software developed by Dolthub, Inc. (https://www.dolthub.com/).
+Original Prolly Tree algorithms and patterns copyright 2021-2024 Dolthub, Inc.
+Licensed under the Apache License, Version 2.0.
+
+Portions of the Dolt code this project ports are themselves derived from Noms
+(https://github.com/attic-labs/noms), and incorporate work covered by the
+following copyright and permission notice:
+
+    Copyright 2016 Attic Labs, Inc. All rights reserved.
+    Licensed under the Apache License, version 2.0:
+    http://www.apache.org/licenses/LICENSE-2.0
+
+BuzHash.java is an Earasoft Java reimplementation of the buzhash rolling-hash
+algorithm from github.com/kch42/buzhash, which is distributed under the MIT
+License; its lookup-table values are taken from that Go reference implementation.

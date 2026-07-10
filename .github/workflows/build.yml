@@ -1,0 +1,29 @@
+# CI: the full reactor on every push and pull request — mvn -B verify runs all
+# module suites (1038 tests as of 2026-07-13: 722 dolthub-java-port + 288
+# prolly-storage + 18 prolly-sync + 10 prolly-playground-service) plus the build
+# gates: google-java-format, per-file license headers, dependency convergence.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+      - name: Verify
+        run: mvn -B verify
+      # WARNER, not a gate (the warner->gate ratchet flips only after a run is
+      # OBSERVED green on the runner — currently unobservable: private repo + no auth)
+      - name: Attribution audit (header vs provenance ledger)
+        run: python3 dev-scripts/check_attribution.py
+        continue-on-error: true

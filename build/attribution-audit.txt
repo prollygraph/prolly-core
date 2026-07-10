@@ -1,0 +1,5 @@
+Attribution-coverage audit — header vs build/dolt-provenance-ledger.md
+modules: dolthub-java-port, prolly-storage, prolly-sync (serial/** skipped: flatc-generated)
+matched: dolt=22, dolt-adapted=4, kch42=2, earasoft=218 (total 246)
+ledger names not in this repo (stayed upstream at the split): ItemAccess, ZOrder
+MISMATCHES: none — every file matches its ledger disposition

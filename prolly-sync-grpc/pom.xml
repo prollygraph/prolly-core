@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- prolly-sync-grpc: the WIRE for the pack protocol. prolly-sync owns the
+       pack semantics (SyncPack/SyncPackCodec/DatabasePackSync); this module
+       puts them on a socket: a gRPC server hosting one or more Databases and
+       a client that pushes/pulls branches against it.
+
+       Design (the upstream sync-grpc transport plan):
+         - sits on DatabasePackSync, the ring's own Database-level pack
+           source/sink — nothing substrate-specific rides along
+         - framed streaming (FetchPack server-streams, ReceivePack
+           client-streams, ~1 MiB frames of the exact SyncPackCodec bytes) —
+           no unary message-size ceiling; the pack still materializes in
+           memory on both sides (incremental streaming is future work)
+         - PackLimits enforced BEFORE parse (resource layer); the codec's
+           per-chunk content-address verification guards integrity after
+         - repo resolution is a lease-shaped SPI so a registry-backed host
+           can pin a store open for the duration of a request
+         - no auth baked in: the server takes ServerInterceptors, the client
+           takes credentials — authentication policy belongs to the host -->
+
+  <parent>
+    <groupId>io.github.prollygraph</groupId>
+    <artifactId>prolly-parent</artifactId>
+    <version>0.2.0-BETA</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <groupId>io.github.prollygraph</groupId>
+  <artifactId>prolly-sync-grpc</artifactId>
+  <packaging>jar</packaging>
+  <name>Prolly Sync gRPC — pack-protocol wire transport</name>
+
+  <description>
+    gRPC server + client for the prolly-sync pack protocol: host Databases on
+    a port, push/pull branches between processes. Framed pack streaming,
+    boundary resource limits, pluggable auth; depends down on prolly-sync and
+    prolly-storage only.
+  </description>
+
+  <properties>
+    <protobuf-maven-plugin.version>0.6.1</protobuf-maven-plugin.version>
+    <os-maven-plugin.version>1.7.1</os-maven-plugin.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>dolthub-java-port</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>prolly-sync</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>prolly-storage</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!-- gRPC stubs + protobuf — versions come from the ring BOM's grpc-bom
+         import + protobuf-java pin. -->
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-stub</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-protobuf</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.google.protobuf</groupId>
+      <artifactId>protobuf-java</artifactId>
+    </dependency>
+    <!-- grpc-netty-shaded ships the netty transport with its native deps
+         shaded inside — no separate Netty classpath fight. -->
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-netty-shaded</artifactId>
+    </dependency>
+    <!-- javax.annotation.Generated is referenced by the protoc-generated
+         Java; the JDK dropped javax.annotation, so vendor the small API jar
+         the gRPC docs recommend. -->
+    <dependency>
+      <groupId>org.apache.tomcat</groupId>
+      <artifactId>annotations-api</artifactId>
+      <version>6.0.53</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.jspecify</groupId>
+      <artifactId>jspecify</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <!-- os-maven-plugin resolves ${os.detected.classifier} (e.g. linux-x86_64),
+         which protobuf-maven-plugin needs to pick the right protoc binary.
+         Declared as an extension so the classifier exists before the plugin runs. -->
+    <extensions>
+      <extension>
+        <groupId>kr.motd.maven</groupId>
+        <artifactId>os-maven-plugin</artifactId>
+        <version>${os-maven-plugin.version}</version>
+      </extension>
+    </extensions>
+    <plugins>
+      <!-- protoc + the gRPC Java codegen during generate-sources: `compile`
+           emits the message Java, `compile-custom` the service stubs; output
+           lands in target/generated-sources/protobuf/ and joins the compile
+           source roots automatically. -->
+      <plugin>
+        <groupId>org.xolstice.maven.plugins</groupId>
+        <artifactId>protobuf-maven-plugin</artifactId>
+        <version>${protobuf-maven-plugin.version}</version>
+        <configuration>
+          <protocArtifact>com.google.protobuf:protoc:3.25.5:exe:${os.detected.classifier}</protocArtifact>
+          <pluginId>grpc-java</pluginId>
+          <pluginArtifact>io.grpc:protoc-gen-grpc-java:1.75.0:exe:${os.detected.classifier}</pluginArtifact>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>compile</goal>
+              <goal>compile-custom</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

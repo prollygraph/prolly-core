@@ -1,0 +1,362 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- dolthub-java-port: the Dolt port. Pure translation of Dolt's Go
+       Prolly Tree code into Java. No RocksDB, no JMX, no Project Panama
+       allocator — those live upstream. The only runtime dep is
+       Flatbuffers (used by Node.fromBytes / serial.ProllyTreeNode). -->
+
+  <parent>
+    <groupId>io.github.prollygraph</groupId>
+    <artifactId>prolly-parent</artifactId>
+    <version>0.2.0-BETA</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>dolthub-java-port</artifactId>
+  <packaging>jar</packaging>
+  <name>Prolly Tree — Dolt Port (core)</name>
+  <description>
+    Java port of Dolt's Prolly Tree engine — pure algorithm + Flatbuffers
+    schema bindings. Consume this jar to build your own engine on top of
+    Dolt's wire-compatible chunk format.
+  </description>
+
+  <properties>
+    <!-- NullAway GATE (null-safety-migration, the foundational module). dolthub-java-port is fully
+         @Nullable-annotated + NullAway-clean (76 findings → 0), so it is gated: under -Perrorprone,
+         NullAway checks com.dolthub.prolly at ERROR, so a new null-unsafe deref fails this module's
+         compile. Overrides the parent MAIN defaults (nullaway.packages=__none__, nullaway.severity=WARN).
+         The repo-wide errorprone CI job stays a warner until its allow_failure ratchet (gated on first
+         runner-green, like the CVE gate). The @Nullable vs Objects.requireNonNull discipline these
+         annotations follow — and why it prevents hiding real bugs — is documented in package-info.java. -->
+    <nullaway.packages>com.dolthub.prolly</nullaway.packages>
+    <nullaway.severity>ERROR</nullaway.severity>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.google.flatbuffers</groupId>
+      <artifactId>flatbuffers-java</artifactId>
+    </dependency>
+    <!-- Caffeine backs NodeCache (ADR-0040): lock-free reads + Window-TinyLFU +
+         byte-weighted bounding. Production scope — version managed in the root pom. -->
+    <dependency>
+      <groupId>com.github.ben-manes.caffeine</groupId>
+      <artifactId>caffeine</artifactId>
+    </dependency>
+    <!-- jspecify nullness annotations (@Nullable). dolthub-java-port is the first
+         module annotated for NullAway (plans/null-safety-migration.md, the
+         foundational dependency-leaf per D-4). CLASS-retention — compile-only. -->
+    <dependency>
+      <groupId>org.jspecify</groupId>
+      <artifactId>jspecify</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+    </dependency>
+    <!-- BouncyCastle for the hash-function study's BLAKE2b/BLAKE3 candidates — TEST
+         scope only (D-2: HashUtils registers the provider reflectively; production
+         adoption would be its own ADR-gated dependency decision). -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+      <version>1.81</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- JMH for the chunker boundary-detection study (test tree only; the upstream
+         chunker-boundary-detection-study plan). -->
+    <dependency>
+      <groupId>org.openjdk.jmh</groupId>
+      <artifactId>jmh-core</artifactId>
+      <version>${jmh.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.openjdk.jmh</groupId>
+      <artifactId>jmh-generator-annprocess</artifactId>
+      <version>${jmh.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- jqwik property-based testing (plans/core-engine-test-strategy.md
+         D-1; version managed in the root pom). Verified on JUnit Platform
+         6.0.x by JqwikSmokeProperty. -->
+    <dependency>
+      <groupId>net.jqwik</groupId>
+      <artifactId>jqwik</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Jazzer (coverage-guided fuzzing) for the deserializer, D-5. The
+         @FuzzTest runs in fast REGRESSION mode (replays the seed corpus) on
+         every build; active coverage-guided fuzzing is the -Pfuzz profile
+         (sets JAZZER_FUZZ + a time budget). -->
+    <dependency>
+      <groupId>com.code-intelligence</groupId>
+      <artifactId>jazzer-junit</artifactId>
+      <version>0.30.0</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- JMH benchmark-list generation (JDK 23+ disabled implicit annotation-processor
+           discovery; without this org.openjdk.jmh.Main fails with a missing
+           META-INF/BenchmarkList — the same wiring the platform + grpc modules carry). -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.openjdk.jmh</groupId>
+              <artifactId>jmh-generator-annprocess</artifactId>
+              <version>${jmh.version}</version>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+      <!-- Line/branch coverage (JaCoCo). prepare-agent publishes the agent
+           argLine into the @{argLine} property; surefire is overridden below
+           to expand it (the parent pom hard-codes a literal argLine, which
+           would otherwise shadow the agent). Report: target/site/jacoco/. -->
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>0.8.14</version>
+        <configuration>
+          <!-- The serial.* package is flatc-generated FlatBuffers binding
+               code — exclude it so coverage reflects the hand-written port. -->
+          <excludes>
+            <exclude>serial/**</exclude>
+          </excludes>
+        </configuration>
+        <executions>
+          <execution>
+            <id>jacoco-prepare-agent</id>
+            <goals>
+              <goal>prepare-agent</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>jacoco-report</id>
+            <phase>test</phase>
+            <goals>
+              <goal>report</goal>
+            </goals>
+          </execution>
+          <!-- Coverage gate (D-8 / Step 28). Bound to `verify` so a normal
+               `mvn verify`/`install` enforces it, but `mvn test` (which stops
+               before verify) stays fast. Thresholds are pinned JUST BELOW the
+               LIVE measured baseline taken on 2026-06-01 over the full module via
+               `mvn verify` — line 95.9% (990/1032), branch 90.7% (441/486),
+               serial/** excluded. (This is lower than Step 3's 97.3%/94.3%
+               because the module grew — e.g. the Database garbage-collection-safe
+               commit overloads — adding branches; D-8 says pin to MEASURED
+               reality, not a stale number, so a gate catches the NEXT regression
+               without failing on day one. Ratchet up as coverage rises.)
+               serial/** (flatc-generated) is excluded via the plugin <excludes>. -->
+          <execution>
+            <id>jacoco-check</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>LINE</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>0.95</minimum>
+                    </limit>
+                    <limit>
+                      <counter>BRANCH</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>0.90</minimum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Override the parent's literal argLine so JaCoCo's agent (injected
+           via @{argLine}) is actually applied during the test run. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>@{argLine} --enable-native-access=ALL-UNNAMED -Djava.io.tmpdir=${project.build.directory}</argLine>
+          <!-- + **/*Property.java: run the jqwik property tests (run-dormant-property-tests, P1).
+               Surefire's default includes match only *Test/*Tests/*TestCase, so *Property-named
+               property tests would silently not run. -->
+          <includes>
+            <include>**/Test*.java</include>
+            <include>**/*Test.java</include>
+            <include>**/*Tests.java</include>
+            <include>**/*TestCase.java</include>
+            <include>**/*Property.java</include>
+          </includes>
+        </configuration>
+      </plugin>
+
+      <!-- Mutation testing (plan: industrial testing). Not bound to a lifecycle
+           phase — run explicitly and off the normal build:
+
+             mvn -pl dolthub-java-port test-compile \
+                 org.pitest:pitest-maven:mutationCoverage
+
+           The pitest plugin mutates the bytecode and checks the tests FAIL —
+           i.e. it measures whether the suite would actually catch a regression,
+           not merely that lines were executed. Report: target/pit-reports/index.html. -->
+      <plugin>
+        <groupId>org.pitest</groupId>
+        <artifactId>pitest-maven</artifactId>
+        <version>${pitest.version}</version>
+        <dependencies>
+          <dependency>
+            <groupId>org.pitest</groupId>
+            <artifactId>pitest-junit5-plugin</artifactId>
+            <version>${pitest-junit5.version}</version>
+          </dependency>
+          <!-- pitest-junit5-plugin pins junit-platform 1.9.2, which is
+               binary-skewed against this project's JUnit 6 (the minion fails
+               with "OutputDirectoryCreator not available"). Force the whole
+               junit-platform/jupiter set to the project's 6.0.3 line. -->
+          <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <version>6.0.3</version>
+          </dependency>
+          <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-engine</artifactId>
+            <version>6.0.3</version>
+          </dependency>
+          <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-commons</artifactId>
+            <version>6.0.3</version>
+          </dependency>
+          <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>6.0.3</version>
+          </dependency>
+          <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>6.0.3</version>
+          </dependency>
+        </dependencies>
+        <configuration>
+          <!-- The minion JVM runs already-compiled preview-feature classfiles. -->
+          <jvmArgs>
+            <value>--enable-native-access=ALL-UNNAMED</value>
+          </jvmArgs>
+          <!-- Full module scope. Scope down to e.g. com.dolthub.prolly.TypeCodec*
+               for a fast focused run while iterating on a single class. -->
+          <targetClasses>
+            <param>com.dolthub.prolly.*</param>
+          </targetClasses>
+          <targetTests>
+            <param>com.dolthub.prolly.*</param>
+          </targetTests>
+          <!-- Mutation gate (D-8 / Step 27): fail the mutationCoverage goal when
+               the mutation score drops below 90% — pinned just below the Step-3
+               measured baseline (94%). The explicit mutationCoverage goal (the CI
+               mutation-testing job) is the gate; ratchet up as the score rises. -->
+          <mutationThreshold>90</mutationThreshold>
+          <threads>4</threads>
+          <outputFormats>
+            <param>HTML</param>
+            <param>XML</param>
+          </outputFormats>
+          <timestampedReports>false</timestampedReports>
+        </configuration>
+      </plugin>
+
+      <!-- Publish a test-jar so downstream modules can reuse the use-after-free test harness
+           (PoisoningBufferPool + ArenaScopeProbe) — plans/off-heap-use-after-free-tests.md D-5.
+           Vanilla maven-jar-plugin test-jar goal; consumers add a type=test-jar test-scoped dep. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>publish-test-jar</id>
+            <goals>
+              <goal>test-jar</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- fbs drift gate (dolthub-java-port/plans/wire-flatc-into-build.md D-1/D-5): the vendored
+           src/main/java/serial/ classes are the compile input; this check verifies they are
+           byte-identical to what the VERSION-PINNED flatc (= ${flatbuffers.version}) regenerates
+           from src/main/fbs/prolly.fbs. WARNER mode for now (reports drift, never fails); the
+           ratchet to gating (the script's error flag as an <argument>) happens only after the check
+           is observed green on the self-hosted runner (D-3). flatc absent or wrong-version => the
+           script skips with a warning — the
+           build never gains a hard flatc dependency. Deliberate regen = dev-scripts/regenerate-fbs.sh. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.6.3</version>
+        <executions>
+          <execution>
+            <id>check-fbs-drift</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>exec</goal>
+            </goals>
+            <configuration>
+              <executable>${project.basedir}/../dev-scripts/check_fbs_drift.sh</executable>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+  <!-- -Pfuzz: active coverage-guided Jazzer fuzzing (D-5, Step 4). Sets
+       JAZZER_FUZZ=1 so @FuzzTest methods actively fuzz (per their maxDuration)
+       instead of the fast default regression-replay of the seed corpus, and
+       scopes the run to the fuzz tests. Kept out of the default `mvn test`
+       (slow + JVM-fork-heavy) — run in CI nightly / when touching serialization:
+         mvn -pl dolthub-java-port -Pfuzz test -Dtest=NodeDeserializerFuzzTest -->
+  <profiles>
+    <profile>
+      <id>fuzz</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <environmentVariables>
+                <JAZZER_FUZZ>1</JAZZER_FUZZ>
+              </environmentVariables>
+              <includes>
+                <include>**/*FuzzTest.java</include>
+              </includes>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>

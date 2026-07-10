@@ -1,0 +1,38 @@
+# Maven Central publishing via the Central Publisher Portal — MANUAL DISPATCH ONLY
+# (publishing to Central is a deliberate act, never a side effect of a push/release).
+#
+# Owner-supplied repository secrets (names fixed here, values never in any session/commit —
+# see RELEASING.md "Maven Central"):
+#   CENTRAL_TOKEN_USERNAME / CENTRAL_TOKEN_PASSWORD  — a Portal user token
+#   GPG_PRIVATE_KEY                                   — ASCII-armored private key
+#   GPG_PASSPHRASE                                    — its passphrase
+#
+# autoPublish=false in the pom: a green run STAGES the deployment; a human reviews and
+# releases it in the Portal UI (central.sonatype.com → Deployments).
+name: central-publish
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 25 (+ import the signing key)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+          server-id: central
+          server-username: CENTRAL_TOKEN_USERNAME
+          server-password: CENTRAL_TOKEN_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+      - name: Verify, sign, and stage to the Portal
+        run: mvn -B -Pcentral-release deploy
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}

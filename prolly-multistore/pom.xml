@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- prolly-multistore: the SUBSTRATE-AGNOSTIC many-repos primitive, extracted
+       from the upstream hosting product's multitenant package (2026-07-16).
+       What lives here is the part of "run N versioned stores in one process"
+       that knows nothing of tenancy POLICY:
+
+         - RepoRegistry + LruRepoRegistry  — id + lifecycle registry with an
+                                             LRU-bounded warm set (generic over
+                                             the per-repo resource type R)
+         - PinnedLruRegistry               — the pin-leased variant (a lease
+                                             blocks eviction; close releases)
+         - RepoLifecycleState + quiesce/naming exceptions
+         - RepoNameValidator               — SYNTAX validation only (regex,
+                                             length, path-traversal defense)
+         - PerRepoRocksDbFactory/OpenRepoDb — per-repo RocksDB layout over
+                                             prolly-storage's shared resources
+
+       Tenancy policy — repo metadata (visibility, orgs, ownership),
+       permissions, audit, reserved-name sets — is the product's, not this
+       module's: the registry tracks ids, never metadata. Dependencies point
+       DOWN only: prolly-storage (and the engine transitively). -->
+
+  <parent>
+    <groupId>io.github.prollygraph</groupId>
+    <artifactId>prolly-parent</artifactId>
+    <version>0.2.0-BETA</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <groupId>io.github.prollygraph</groupId>
+  <artifactId>prolly-multistore</artifactId>
+  <packaging>jar</packaging>
+  <name>Prolly Multistore — many-repos primitive</name>
+
+  <description>
+    Run N versioned stores in one process: an id + lifecycle repo registry
+    with an LRU-bounded warm set (plain and pin-leased variants), repo-name
+    syntax validation, and a per-repo RocksDB layout factory. No tenancy
+    policy, no Spring; depends down on prolly-storage only.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>prolly-storage</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <!-- jspecify @Nullable (CLASS-retention, compile-only). -->
+    <dependency>
+      <groupId>org.jspecify</groupId>
+      <artifactId>jspecify</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+    </dependency>
+  </dependencies>
+</project>

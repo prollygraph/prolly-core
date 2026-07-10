@@ -1,0 +1,129 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bind tests</title>
+<style>
+  body{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;margin:2rem;line-height:1.6}
+  .pass{color:#2e7d32}.fail{color:#c62828;font-weight:700}
+  h1{font-size:18px} #summary{font-weight:700;margin:.6em 0}
+</style>
+<h1>Bind (write-path-explorer.bind.js) — self-contained tests; no dependencies, just open this file</h1>
+<div id="summary">running…</div>
+<div id="results"></div>
+<script src="write-path-explorer.bind.js"></script>
+<script>
+'use strict';
+/* The same contract the Playwright spec pins (bind-library.spec.ts in the upstream
+   monorepo suite) — here as a dependency-free in-browser harness anyone can run by
+   opening the file. Salvaged from a same-day standalone-repo extraction that was
+   folded back (a one-file microlib with no second consumer is consumed by copying
+   the file; a separate repo's twin-copy drift tax wasn't earned). */
+const out = [];
+const tick = () => new Promise(r => queueMicrotask(r)); // lands AFTER Bind's render microtask (FIFO)
+const host = (html) => { const d = document.createElement('div'); d.innerHTML = html; return d; };
+function assert(cond, msg) { if (!cond) throw new Error(msg); }
+
+async function t(name, fn) {
+  try { await fn(); out.push({ name, ok: true }); }
+  catch (e) { out.push({ name, ok: false, err: String(e && e.message || e) }); }
+}
+
+(async () => {
+  await t('mount renders; assignment re-renders; batched assignments render once', async () => {
+    let calls = 0;
+    Bind.format('count', v => { calls++; return v; });
+    const h = host('<span data-text="x|count"></span>');
+    const vm = Bind.mount(h, { x: 'hello' });
+    assert(h.textContent === 'hello', 'initial render');
+    calls = 0;
+    vm.x = 'first'; vm.x = 'second';
+    await tick();
+    assert(h.textContent === 'second', 'latest value rendered');
+    assert(calls === 1, 'two same-tick assignments coalesced to ONE render, got ' + calls);
+  });
+
+  await t('data-text is textContent — markup in data renders literally', async () => {
+    const h = host('<span data-text="msg"></span>');
+    Bind.mount(h, { msg: '<b onmouseover="alert(1)">bold?</b>' });
+    assert(h.querySelector('b') === null, 'no element created from data');
+    assert(h.textContent.includes('<b'), 'markup shown literally');
+  });
+
+  await t('data-show, data-attr-* (removes on null/false), data-class-*', async () => {
+    const h = host('<div id="p" data-show="open" data-attr-title="tip" data-attr-data-arm="arm" data-class-clipped="clip">content</div>');
+    const vm = Bind.mount(h, { open: true, tip: 'max 6.1 ms', arm: 'rocks', clip: true });
+    const p = h.firstElementChild;
+    assert(!p.hidden && p.getAttribute('title') === 'max 6.1 ms', 'shown + titled');
+    assert(p.getAttribute('data-arm') === 'rocks', 'attr-data-arm -> data-arm');
+    assert(p.classList.contains('clipped'), 'class toggled on');
+    vm.open = false; vm.tip = null; vm.clip = false;
+    await tick();
+    assert(p.hidden, 'hidden on falsy show');
+    assert(!p.hasAttribute('title'), "falsy REMOVES the attribute, never leaves 'null'");
+    assert(!p.classList.contains('clipped'), 'class toggled off');
+  });
+
+  await t('formatters apply; an unknown formatter throws loudly', async () => {
+    Bind.format('number', v => v.toLocaleString('en-US'));
+    const h = host('<span data-text="ops|number"></span>');
+    Bind.mount(h, { ops: 476190 });
+    assert(h.textContent === '476,190', 'formatter applied, got ' + h.textContent);
+    let threw = '';
+    try { Bind.mount(host('<span data-text="x|nope"></span>'), { x: 1 }); }
+    catch (e) { threw = String(e.message); }
+    assert(threw.includes('unknown formatter'), 'unknown formatter must throw, got: ' + threw);
+  });
+
+  await t('data-each stamps per item, re-stamps on replace, nests with scope shadowing', async () => {
+    const h = host(
+      '<div data-each="panel of panels"><template>' +
+      '<div class="panel" data-attr-data-metric="panel.metric">' +
+      '<span class="title" data-text="panel.title"></span>' +
+      '<div data-each="row of panel.rows"><template><i class="row" data-text="row.lab"></i></template></div>' +
+      '</div></template></div>');
+    const vm = Bind.mount(h, { panels: [
+      { metric: 'read', title: 'reads', rows: [{ lab: 'memory' }, { lab: 'rocks' }] },
+      { metric: 'write', title: 'writes', rows: [{ lab: 'file' }] },
+    ]});
+    assert(h.querySelectorAll('.panel').length === 2, 'two panels stamped');
+    assert(h.querySelectorAll('[data-metric="read"] .row').length === 2, 'nested rows under read');
+    assert(h.querySelector('[data-metric="write"] .row').textContent === 'file', 'inner scope resolves');
+    assert(h.querySelector('[data-metric="read"] .title').textContent === 'reads', 'static-before-template renders with outer scope');
+    vm.panels = [{ metric: 'read', title: 'reads', rows: [{ lab: 'only' }] }];
+    await tick();
+    assert(h.querySelectorAll('.panel').length === 1 && h.querySelectorAll('.row').length === 1, 're-stamped on replace');
+    assert(h.querySelectorAll('template').length >= 1, 'the template itself remains, inert');
+  });
+
+  await t('the one-item-array idiom: [] removes the surface from the DOM entirely', async () => {
+    const h = host('<div data-each="n of nodes"><template><em class="ihash" data-text="n.hash"></em></template></div>');
+    const vm = Bind.mount(h, { nodes: [{ hash: 'abc' }] });
+    assert(h.querySelectorAll('.ihash').length === 1, 'stamped when present');
+    vm.nodes = [];
+    await tick();
+    assert(h.querySelectorAll('.ihash').length === 0, 'no element at all when empty — no hidden residue');
+    assert(h.textContent === '', 'no text residue in textContent');
+  });
+
+  await t('malformed data-each and a missing template child both throw loudly', async () => {
+    let a = '', b = '';
+    try { Bind.mount(host('<div data-each="oops"></div>'), {}); } catch (e) { a = String(e.message); }
+    try { Bind.mount(host('<div data-each="x of xs"></div>'), { xs: [1] }); } catch (e) { b = String(e.message); }
+    assert(a.includes('malformed data-each'), 'malformed spec throws');
+    assert(b.includes('needs a <template> child'), 'missing template throws');
+  });
+
+  const res = document.getElementById('results');
+  let pass = 0;
+  for (const r of out) {
+    const d = document.createElement('div');
+    d.className = r.ok ? 'pass' : 'fail';
+    d.textContent = (r.ok ? '✓ ' : '✗ ') + r.name + (r.ok ? '' : ' — ' + r.err);
+    res.appendChild(d);
+    if (r.ok) pass++;
+  }
+  const sum = `${pass}/${out.length} passed`;
+  document.getElementById('summary').textContent = sum;
+  document.getElementById('summary').className = pass === out.length ? 'pass' : 'fail';
+  document.title = `Bind tests — ${sum}`;
+})();
+</script>

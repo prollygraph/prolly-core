@@ -1,0 +1,25 @@
+# Per-Encoding golden vectors — Java-self-consistent characterization (Step 17).
+# Format: <Encoding> <valueLabel> <hex of the 8-byte order-preserving encoding>.
+# NOT a Go-parity claim (port != Dolt v2.0.3 per BITCOMPAT_FINDINGS.md, Layer 3).
+# Regenerate: delete this file and run EncodingGoldenVectorTest.
+Int64 -9223372036854775808 0000000000000000
+Int64 -4294967296 7fffffff00000000
+Int64 -2 7ffffffffffffffe
+Int64 -1 7fffffffffffffff
+Int64 0 8000000000000000
+Int64 1 8000000000000001
+Int64 2 8000000000000002
+Int64 4294967296 8000000100000000
+Int64 81985529216486895 8123456789abcdef
+Int64 9223372036854775807 ffffffffffffffff
+Float64 -Infinity 000fffffffffffff
+Float64 -1.7976931348623157E308 0010000000000000
+Float64 -1.0 400fffffffffffff
+Float64 -4.9E-324 7ffffffffffffffe
+Float64 -0.0 7fffffffffffffff
+Float64 0.0 8000000000000000
+Float64 4.9E-324 8000000000000001
+Float64 1.0 bff0000000000000
+Float64 1.7976931348623157E308 ffefffffffffffff
+Float64 Infinity fff0000000000000
+Float64 NaN fff8000000000000

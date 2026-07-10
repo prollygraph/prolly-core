@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- prolly-sync: the SUBSTRATE-AGNOSTIC sync pack protocol, extracted from
+       the upstream engine's sync package (the upstream extraction plan,
+       ADR-0048's transport-agnostic direction). What lives here is the part of
+       distributed sync that knows nothing of RDF:
+
+         - SyncPack + SyncPackCodec  — the wire format (chunks + commit entries)
+         - SyncCommitEntry           — the wire's own history-entry record
+         - DataTreeReachability      — the generic prolly-tree Merkle walk
+         - DatabasePackSync          — the Database-level pack source/sink
+         - SubstrateSyncContributor  — the SPI a non-RDF substrate (json, …)
+                                       plugs into the shared /sync surface
+
+       The RDF face's builders (PackBuilder, CommitClosure, CommitLogSync,
+       ChunkReachability's RootMetaTree entry) and the transports stay in
+       the upstream engine — they are consumers of this protocol, not part of it.
+       Dependencies point DOWN only: dolthub-java-port + prolly-storage; a
+       consumer wanting sync no longer drags the RDF4J stack. -->
+
+  <parent>
+    <groupId>io.github.prollygraph</groupId>
+    <artifactId>prolly-parent</artifactId>
+    <version>0.2.0-BETA</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <groupId>io.github.prollygraph</groupId>
+  <artifactId>prolly-sync</artifactId>
+  <packaging>jar</packaging>
+  <name>Prolly Sync — substrate-agnostic pack protocol</name>
+
+  <description>
+    The sync wire format (SyncPack/SyncPackCodec/SyncCommitEntry), the generic
+    Merkle reachability walk, the Database-level pack source/sink, and the
+    substrate SPI. No RDF, no Spring; depends down on dolthub-java-port and
+    prolly-storage only.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>dolthub-java-port</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>prolly-storage</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <!-- jspecify @Nullable (CLASS-retention, compile-only). -->
+    <dependency>
+      <groupId>org.jspecify</groupId>
+      <artifactId>jspecify</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+    </dependency>
+    <!-- jqwik — SyncPackCodecProperty travels with the codec. -->
+    <dependency>
+      <groupId>net.jqwik</groupId>
+      <artifactId>jqwik</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- Surefire's default includes match only *Test/*Tests/*TestCase, so the
+               jqwik *Property tests (SyncPackCodecProperty travelled here with the
+               codec) would silently NOT run. List the defaults explicitly + add
+               *Property so the property suite actually executes here (the CLAUDE.md
+               property-test-include rule; dev-scripts/check_property_test_includes.py
+               is the warner). -->
+          <includes>
+            <include>**/Test*.java</include>
+            <include>**/*Test.java</include>
+            <include>**/*Tests.java</include>
+            <include>**/*TestCase.java</include>
+            <include>**/*Property.java</include>
+          </includes>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

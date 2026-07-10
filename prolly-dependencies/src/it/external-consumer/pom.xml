@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- External-consumer fixture for ADR-0042 / plans/dependency-bom-module.md
+       Step 4. Simulates a DOWNSTREAM project: a foreign groupId, NO parent (so it
+       inherits nothing from prolly-parent), importing ONLY the published
+       prolly-dependencies BOM. The dependencies below declare NO <version> — if
+       the BOM is a valid externally-importable artifact, they resolve through it;
+       if not, Maven model-building fails with "version missing".
+
+       NOT in the reactor (it lives under src/it/, simulating a separate build).
+       Run it after a `mvn install` that has published prolly-dependencies +
+       dolthub-java-port to the local repo:
+
+         mvn -f prolly-dependencies/src/it/external-consumer/pom.xml \
+             dependency:tree -Dverbose=false
+
+       Expect caffeine 3.1.8 + dolthub-java-port 0.2.0-BETA + prolly-storage
+       0.2.0-BETA (ADR-0060 substrate) in the resolved tree, with no version
+       declared here. -->
+
+  <groupId>com.example.external-consumer</groupId>
+  <artifactId>prolly-dependencies-consumer-it</artifactId>
+  <version>0.0.1</version>
+  <packaging>jar</packaging>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.github.prollygraph</groupId>
+        <artifactId>prolly-dependencies</artifactId>
+        <version>0.2.0-BETA</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- Both version-less: resolution proves the imported BOM pins them. -->
+    <dependency>
+      <groupId>com.github.ben-manes.caffeine</groupId>
+      <artifactId>caffeine</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>dolthub-java-port</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>prolly-storage</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>prolly-sync</artifactId>
+    </dependency>
+  </dependencies>
+</project>

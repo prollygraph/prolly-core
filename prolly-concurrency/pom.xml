@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- prolly-concurrency: the shared home for linearizability + memory-model
+       tests across every layer (dolthub-java-port MutableMap/Database,
+       prolly-rdf4j ProllySail commit path, the manifest CAS register, ...).
+
+       Why a dedicated, test-only module (mirrors prolly-rdf4j-compliance):
+       - Lincheck is Kotlin-hosted + uses bytecode instrumentation; jcstress
+         brings its own forked runner. Isolating them keeps the Kotlin/Lincheck
+         /jcstress toolchain OUT of every production module's test classpath.
+       - One place serves the concurrency phases of ALL the test-strategy plans
+         (core Phase 4, prolly-rdf Phase 5, prolly-rdf4j Phase 5) — no need to
+         pull Lincheck into three production modules.
+       - These tests are slow (model-checking explores many interleavings;
+         jcstress forks per test), so the test phase is gated OFF by default
+         exactly like prolly-rdf4j-compliance / prolly-rdf4j-e2e:
+
+           mvn -pl prolly-concurrency -am test -Dprolly.concurrency.skip=false
+
+       NOTE: deliberately NO JaCoCo here — it's a test-only module (nothing to
+       cover) and a coverage agent conflicts with Lincheck's instrumentation
+       agent. This also sidesteps the "JaCoCo 5th-module argLine" gotcha. -->
+
+  <parent>
+    <groupId>io.github.prollygraph</groupId>
+    <artifactId>prolly-parent</artifactId>
+    <version>0.2.0-BETA</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <groupId>io.github.prollygraph</groupId>
+  <artifactId>prolly-concurrency</artifactId>
+  <name>Prolly Tree — concurrency tests (Lincheck linearizability + jcstress)</name>
+
+  <properties>
+    <lincheck.version>2.39</lincheck.version>
+    <jcstress.version>0.16</jcstress.version>
+    <!-- Concurrency run is opt-in: default true skips the (slow) test phase but
+         still test-compiles, so a broken harness fails a normal build. -->
+    <prolly.concurrency.skip>true</prolly.concurrency.skip>
+  </properties>
+
+  <dependencies>
+    <!-- Modules under test (test scope — nothing here ships). -->
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>dolthub-java-port</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- Shared test doubles from dolthub-java-port's test-jar (InMemoryManifest — consolidated by
+         the upstream test-only-standin audit, Step 3; this module's local copy was the original,
+         adopted upstream verbatim). -->
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>dolthub-java-port</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.prollygraph</groupId>
+      <artifactId>prolly-storage</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Lincheck: linearizability model-checking + stress (Kotlin-hosted,
+         consumed from Java). Pulls kotlin-stdlib transitively, confined here. -->
+    <!-- lincheck-jvm (NOT bare "lincheck": that's the Kotlin-Multiplatform
+         stub jar — 767 bytes, no classes; the JVM variant has the real API). -->
+    <dependency>
+      <groupId>org.jetbrains.kotlinx</groupId>
+      <artifactId>lincheck-jvm</artifactId>
+      <version>${lincheck.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- jcstress: JVM memory-model concurrency tests. The actual run uses the
+         jcstress harness (its own forked runner / uber-jar), not surefire;
+         jcstress-core gives the @JCStressTest API so harnesses compile here. -->
+    <dependency>
+      <groupId>org.openjdk.jcstress</groupId>
+      <artifactId>jcstress-core</artifactId>
+      <version>${jcstress.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <!-- Java 23+ no longer auto-discovers annotation processors from the
+               compile classpath (the long-deprecated implicit discovery is now
+               off by default). jcstress's @JCStressTest runner-stub generator is
+               such a processor, so it must be named explicitly on the processor
+               path. WITHOUT this, test-compile silently emits no *_jcstress
+               stubs and no jcstress TestList resource, and the run-jcstress.sh
+               runner dies at startup with an NPE in TestList.getTests (a null
+               resource stream). Discovered 2026-06-11 wiring Step 20: the Java
+               25 bump (2026-06-05) tripped exactly this — the jcstress harnesses
+               kept COMPILING (so CI's compile-check stayed green) but had
+               silently stopped RUNNING. The Lincheck/surefire path needs no
+               processor, so this only affects the jcstress run. -->
+          <!-- -proc:full: JDK 21 added explicit -proc:{none,only,full}; JDK 23
+               made classpath-discovered processors no longer run implicitly, so
+               processing must be explicitly turned on. -proc:full = compile AND
+               run processors found on the processor path below. -->
+          <compilerArgs>
+            <arg>-proc:full</arg>
+          </compilerArgs>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.openjdk.jcstress</groupId>
+              <artifactId>jcstress-core</artifactId>
+              <version>${jcstress.version}</version>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- Gated off by default; flip with -Dprolly.concurrency.skip=false. -->
+          <skipTests>${prolly.concurrency.skip}</skipTests>
+          <!-- Base flags (preview/native, as elsewhere) PLUS the module-open
+               set Lincheck's bytecode instrumentation needs on JDK 9+. -->
+          <argLine>--enable-native-access=ALL-UNNAMED
+            -Djdk.attach.allowAttachSelf=true -XX:+EnableDynamicAgentLoading
+            --add-opens java.base/java.lang=ALL-UNNAMED
+            --add-opens java.base/java.lang.invoke=ALL-UNNAMED
+            --add-opens java.base/jdk.internal.misc=ALL-UNNAMED
+            --add-opens java.base/jdk.internal.util=ALL-UNNAMED
+            --add-opens java.base/sun.nio.ch=ALL-UNNAMED
+            --add-exports java.base/jdk.internal.util=ALL-UNNAMED
+            --add-exports java.base/sun.security.action=ALL-UNNAMED</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+  <!-- -Pconcurrency: sugar for -Dprolly.concurrency.skip=false. Runs the (slow)
+       Lincheck + jcstress suites this module gates off by default, so a CI
+       concurrency job can name a profile instead of remembering the property.
+       An active profile's properties override the module's base <properties>,
+       flipping the surefire <skipTests> off. The underlying -D knob still works.
+         mvn -pl prolly-concurrency -am -Pconcurrency test -->
+  <profiles>
+    <profile>
+      <id>concurrency</id>
+      <properties>
+        <prolly.concurrency.skip>false</prolly.concurrency.skip>
+      </properties>
+    </profile>
+  </profiles>
+</project>

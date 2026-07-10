@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+
+  <groupId>io.github.prollygraph</groupId>
+  <artifactId>prolly-dependencies</artifactId>
+  <version>0.2.0-BETA</version>
+  <packaging>pom</packaging>
+
+  <name>Prolly Tree — Dependency BOM</name>
+  <description>
+    Maven Bill of Materials: the single source of truth for dependency versions
+    across the Prolly Tree Java port, importable by downstream consumers to pin
+    a coherent set. See ADR-0042.
+  </description>
+
+  <url>https://github.com/prollygraph/prolly-core</url>
+  <licenses>
+    <license>
+      <name>Apache-2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>prollygraph</id>
+      <url>https://github.com/prollygraph</url>
+    </developer>
+  </developers>
+  <scm>
+    <connection>scm:git:https://github.com/prollygraph/prolly-core.git</connection>
+    <developerConnection>scm:git:git@github.com:prollygraph/prolly-core.git</developerConnection>
+    <url>https://github.com/prollygraph/prolly-core</url>
+  </scm>
+
+  <distributionManagement>
+    <repository>
+      <id>github</id> <!-- must match the workflow's server-id -->
+      <name>GitHub Packages — prollygraph/prolly-core</name>
+      <url>https://maven.pkg.github.com/prollygraph/prolly-core</url>
+    </repository>
+  </distributionManagement>
+
+  <properties>
+    <rocksdb.version>8.10.0</rocksdb.version>
+    <flatbuffers.version>23.5.26</flatbuffers.version>
+    <caffeine.version>3.1.8</caffeine.version>
+    <jqwik.version>1.9.2</jqwik.version>
+    <!-- jspecify: the tool-neutral nullness annotation standard (@Nullable /
+         @NullMarked) for the NullAway null-safety migration (plans/null-safety-migration.md
+         D-3). NullAway, ErrorProne, IntelliJ and the Checker Framework all honor it.
+         Compile-scoped + BOM-managed so each module annotated in the rollout adds the
+         dep without a version. CLASS-retention annotations — present at compile, never
+         loaded at runtime. -->
+    <jspecify.version>1.0.0</jspecify.version>
+    <slf4j.version>2.0.17</slf4j.version>
+    <logback.version>1.5.32</logback.version>
+    <log4j2.version>2.25.4</log4j2.version>
+    <jackson-annotations.version>2.21</jackson-annotations.version>
+    <mockito.version>5.20.0</mockito.version>
+    <junit.version>6.0.3</junit.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- Internal: the pure Dolt port. Pinned here so a downstream consumer can
+           import this BOM and depend on dolthub-java-port without a version
+           (ADR-0042 D-4 — externally-publishable internal coordinates). -->
+      <dependency>
+        <groupId>io.github.prollygraph</groupId>
+        <artifactId>dolthub-java-port</artifactId>
+        <version>0.2.0-BETA</version>
+      </dependency>
+      <!-- Internal: the data-shape-agnostic versioned-store substrate — joined this
+           repo 2026-07-10; pinned like dolthub-java-port so consumers can depend on
+           it version-less. -->
+      <dependency>
+        <groupId>io.github.prollygraph</groupId>
+        <artifactId>prolly-storage</artifactId>
+        <version>0.2.0-BETA</version>
+      </dependency>
+      <!-- Internal: the pack-based replication protocol over the substrate. -->
+      <dependency>
+        <groupId>io.github.prollygraph</groupId>
+        <artifactId>prolly-sync</artifactId>
+        <version>0.2.0-BETA</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.prollygraph</groupId>
+        <artifactId>prolly-sync-grpc</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- gRPC + protobuf for the prolly-sync-grpc transport. The grpc-bom aligns the
+           io.grpc family; protobuf-java is pinned to the protoc the transport's build
+           runs (upstream CVE-driven pins: grpc 1.75.0 / protobuf 3.25.5). -->
+      <dependency>
+        <groupId>io.grpc</groupId>
+        <artifactId>grpc-bom</artifactId>
+        <version>1.75.0</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.google.protobuf</groupId>
+        <artifactId>protobuf-java</artifactId>
+        <version>3.25.5</version>
+      </dependency>
+      <!-- Convergence pins the grpc/guava drag needs (the enforcer's
+           dependencyConvergence gate): caffeine and guava each drag a
+           different checker-qual; pin to the highest on any path. -->
+      <dependency>
+        <groupId>org.checkerframework</groupId>
+        <artifactId>checker-qual</artifactId>
+        <version>3.43.0</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ch.qos.logback</groupId>
+        <artifactId>logback-classic</artifactId>
+        <version>${logback.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ch.qos.logback</groupId>
+        <artifactId>logback-core</artifactId>
+        <version>${logback.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.logging.log4j</groupId>
+        <artifactId>log4j-to-slf4j</artifactId>
+        <version>${log4j2.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.mockito</groupId>
+        <artifactId>mockito-core</artifactId>
+        <version>${mockito.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.mockito</groupId>
+        <artifactId>mockito-junit-jupiter</artifactId>
+        <version>${mockito.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-nop</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.rocksdb</groupId>
+        <artifactId>rocksdbjni</artifactId>
+        <version>${rocksdb.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.flatbuffers</groupId>
+        <artifactId>flatbuffers-java</artifactId>
+        <version>${flatbuffers.version}</version>
+      </dependency>
+      <!-- Caffeine: the production node cache (ADR-0040) — lock-free reads +
+           Window-TinyLFU + byte-weighted bounding; also bounds the per-tx
+           term-encode memo (ADR-0042 follow-on). One version for every module. -->
+      <dependency>
+        <groupId>com.github.ben-manes.caffeine</groupId>
+        <artifactId>caffeine</artifactId>
+        <version>${caffeine.version}</version>
+      </dependency>
+      <!-- jspecify nullness annotations (@Nullable / @NullMarked) for the NullAway
+           null-safety migration (plans/null-safety-migration.md D-3). Managed here so
+           a module annotated in the rollout adds the dep without a version. -->
+      <dependency>
+        <groupId>org.jspecify</groupId>
+        <artifactId>jspecify</artifactId>
+        <version>${jspecify.version}</version>
+      </dependency>
+      <!-- jqwik property-based testing (plans/core-engine-test-strategy.md D-1).
+           Verified compatible with this project's JUnit Platform 6.0.x by
+           JqwikSmokeProperty (Phase 0 Step 1). -->
+      <dependency>
+        <groupId>net.jqwik</groupId>
+        <artifactId>jqwik</artifactId>
+        <version>${jqwik.version}</version>
+        <scope>test</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
