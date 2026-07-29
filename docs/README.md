@@ -45,3 +45,4 @@ Up the stack: the [prolly-rdf ring's docs](https://github.com/prollygraph/prolly
 continue the curriculum over this engine (RDF foundations, anatomy, runnable demos).
 
 - [`developer-skill-sets.md`](developer-skill-sets.md) — what working on this ring asks of you: competencies per module, ramp difficulty, and where to start.
+- [`operator-notes.md`](operator-notes.md) — running a process that embeds the engine: disk, memory, garbage collection, backup, and diagnosing a kill.
