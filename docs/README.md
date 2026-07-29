@@ -43,3 +43,5 @@ monorepo content (upper layers, plans) that lives upstream.
 
 Up the stack: the [prolly-rdf ring's docs](https://github.com/prollygraph/prolly-rdf/blob/main/docs/README.md)
 continue the curriculum over this engine (RDF foundations, anatomy, runnable demos).
+
+- [`developer-skill-sets.md`](developer-skill-sets.md) — what working on this ring asks of you: competencies per module, ramp difficulty, and where to start.
