@@ -6,6 +6,38 @@ supported transition. Entries below are release-level; day-to-day history is the
 
 ## Unreleased
 
+### Engine
+
+- **Seeded seek in the tree-write path.** `Cursor.atKeyFrom` positions a fresh cursor
+  chain from an existing one over the same immutable base tree, reusing already-materialised
+  nodes and reading the store only below the first divergence; `TreeMutator.Chunker.advanceTo`
+  now uses it instead of re-descending from the root for every mutation. Descent math is
+  byte-for-byte `atKey`'s — only the child fetch is elided — and positioning is pinned by a
+  chain-equality differential property over arbitrary-order probes. Measured on a
+  500k-triple real-ontology ingest, three paired runs per arm: **wall 21.45 s → 14.04 s
+  (−34.6 %)**, flush node-read allocation **−93.3 %**, total sampled allocation −65 %.
+  Determinism gates green throughout (Merkle convergence, fast-forward differential,
+  cross-language fixture parity).
+
+### Licensing and attribution
+
+- The Apache-2.0 appendix now names the copyright owner (`Copyright 2026 Earasoft`).
+- `NOTICE` records the full upstream chain rather than half of it: Dolthub, Inc. (the
+  prolly tree this project ports), **Attic Labs, Inc.** (Noms, which Dolt's storage layer
+  derives from — the notice Dolt itself incorporates), and **kch42/buzhash (MIT)**, whose
+  algorithm `BuzHash.java` reimplements. The first two were missing; the third was named in
+  the file header and in a dedicated build template but never in `NOTICE`.
+
+### Documentation
+
+- [`docs/developer-skill-sets.md`](docs/developer-skill-sets.md) — competencies per module
+  with ramp difficulty and where-to-start paths by background.
+- [`docs/operator-notes.md`](docs/operator-notes.md) — for whoever owns a process embedding
+  this engine: what lives on disk, the three places memory hides (only one bounded by
+  `-Xmx`), garbage collection as mark-and-sweep reclaiming orphans only, cold-copy backup,
+  and an ordered procedure for diagnosing a stall or a kill.
+- AI disclosure statement in the README and contributor policy in `CONTRIBUTING.md`.
+
 - Fixed: resizing the browser window in REAL mode redrew the SIM's trees and stats over
   the engine's panes (the resize listener called the sim renderers unconditionally; now
   routed by mode — caught by the README capture script, whose fullPage screenshots
