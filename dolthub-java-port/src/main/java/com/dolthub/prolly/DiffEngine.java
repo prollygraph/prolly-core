@@ -168,14 +168,8 @@ public class DiffEngine {
                         && a.isLeaf()
                         && b.isLeaf()
                         && Arrays.equals(a.node().bytes(), b.node().bytes())) {
-                    // Both cursors sit at the start of byte-identical leaves. Rather than walking
-                    // through them (which fetches the next leaf on each side as it crosses the
-                    // boundary), step the PARENTS over every following identical subtree by hash,
-                    // reading nothing until the trees actually diverge.
-                    if (!skipIdenticalSubtrees(a, b)) {
-                        skipLeaf(a);
-                        skipLeaf(b);
-                    }
+                    skipLeaf(a);
+                    skipLeaf(b);
                     continue;
                 }
 
@@ -226,51 +220,6 @@ public class DiffEngine {
     }
 
     /** Advances {@code c} past every entry of its current leaf node. */
-    /**
-     * Step both cursors past sibling subtrees whose child-reference hashes are equal, reading
-     * nothing.
-     *
-     * <p>This is what turns a near-identical diff from {@code O(n)} into {@code O(log n +
-     * changes)}. The per-leaf byte comparison can only skip a leaf it has already READ, so the walk
-     * still paid one store read per leaf; here the parents' child hashes are compared first, and
-     * equal hashes prove the subtrees identical under content addressing — so neither side is
-     * materialised at all.
-     *
-     * <p>Conservative by construction: it steps only while both parents are valid and their child
-     * hashes match, and stops at the first difference or exhaustion, leaving the ordinary lockstep
-     * walk to handle everything else. It never skips a subtree the two sides do not share.
-     *
-     * @return {@code true} if at least one subtree pair was skipped (both cursors were re-fetched
-     *     to their new positions), {@code false} if nothing matched and the cursors are untouched
-     */
-    private static boolean skipIdenticalSubtrees(Cursor a, Cursor b) {
-        if (a.parent() == null || b.parent() == null) return false;
-        boolean skippedAny = false;
-        while (true) {
-            // Step both parents to their next child WITHOUT materialising it.
-            boolean movedA = a.advanceParentOnly();
-            boolean movedB = b.advanceParentOnly();
-            if (!movedA || !movedB) {
-                // One side ran out. The other may have advanced its parent, leaving its own node
-                // STALE — a stale node with a live index yields wrong keys, so re-materialise it
-                // before handing control back to the ordinary walk.
-                if (movedA) a.refetchFromParent();
-                if (movedB) b.refetchFromParent();
-                return skippedAny;
-            }
-            MemorySegment refA = a.parentChildRef();
-            MemorySegment refB = b.parentChildRef();
-            if (refA == null || refB == null || ByteUtils.compareUnsigned(refA, refB) != 0) {
-                // Differing (or unavailable) children: descend on both sides and let the
-                // ordinary key-wise walk take over from here.
-                a.refetchFromParent();
-                b.refetchFromParent();
-                return true;
-            }
-            skippedAny = true; // identical subtree — step over it without reading either side
-        }
-    }
-
     private static void skipLeaf(Cursor c) {
         Node leaf = c.node();
         while (c.isValid() && c.node() == leaf) {

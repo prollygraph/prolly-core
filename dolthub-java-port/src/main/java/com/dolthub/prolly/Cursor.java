@@ -437,38 +437,6 @@ public class Cursor {
         return true;
     }
 
-    /**
-     * Advance the PARENT to its next child without materialising anything.
-     *
-     * @return {@code false} when the parent chain is exhausted; this cursor is then left invalid.
-     * @apiNote After this returns {@code true} the cursor's own node is STALE — the parent points
-     *     at a child that has not been read. Call {@link #refetchFromParent()} before using the
-     *     cursor again, or keep stepping.
-     * @implNote The point is to step over subtrees whose content hashes a caller has already
-     *     compared, paying no store read at all. {@link #advance()} cannot do this: crossing a leaf
-     *     boundary fetches the next leaf eagerly, which is exactly the cost being avoided.
-     */
-    public boolean advanceParentOnly() {
-        Cursor p = parent;
-        if (p == null || !p.advance()) {
-            index = node.count(); // exhausted — the end state advance() reaches
-            return false;
-        }
-        return true;
-    }
-
-    /** Hash of the child the parent currently points at, or {@code null} at the top level. */
-    public @Nullable MemorySegment parentChildRef() {
-        Cursor p = parent;
-        return (p != null && p.isValid()) ? p.currentValue() : null;
-    }
-
-    /** Materialise this cursor's node from the parent's CURRENT position — one store read. */
-    public void refetchFromParent() {
-        fetchNodeFromParent();
-        index = 0;
-    }
-
     private void fetchNodeFromParent() {
         // Only called from advance()/retreat() after parent.advance()/retreat() succeeded — so
         // parent
