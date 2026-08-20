@@ -62,3 +62,12 @@ AI assistance is welcome — this project itself is developed with it (see the
 The version is coordinated with the upstream consumer (see
 [`RELEASING.md`](RELEASING.md)) — don't bump it in a feature PR; maintainers handle
 release versioning.
+
+## Reporting issues
+
+- **Bugs / questions / feature requests:** GitHub issues on this repo. For a bug, the
+  version (`0.2.0-BETA` or a commit hash), a minimal reproduction, and the observed vs
+  expected behavior make it actionable.
+- **Suspected vulnerabilities:** never a public issue — use the private route in
+  [`SECURITY.md`](SECURITY.md).
+- **Maintainer:** see [`MAINTAINERS.md`](MAINTAINERS.md).

@@ -18,6 +18,24 @@ primitive — plus the dependency-light durable substrate that makes it a usable
 > This is an independent port; ported files retain their original DoltHub copyright under
 > Apache-2.0 (see [`NOTICE`](NOTICE) and the per-file headers).
 
+## Testing and verification, up front
+
+- **1,112 tests as of 2026-07-16** across six modules (722 in the tree port itself) —
+  unit, **property-based (jqwik)**, **fuzz-regression (Jazzer seeds)**, and **golden
+  cross-language encoding vectors** under [`cross-lang/fixtures`](cross-lang/fixtures):
+  the lowest layers (hash function, tuple value encodings) are pinned byte-identical to
+  upstream Go Dolt; the layers above deliberately diverge (see
+  [Relationship to Dolt](#relationship-to-dolt)).
+- **Concurrency net**: Lincheck linearizability suites and jcstress memory-model
+  harnesses over the shared-state seams (node stores, manifest compare-and-set, commit
+  optimistic concurrency) in [`prolly-concurrency`](prolly-concurrency/README.md) —
+  slow by design, gated behind `-Pconcurrency`.
+- **It cannot read or write Dolt databases.** The on-disk format is this port's own.
+- Build gates on every `mvn verify`: google-java-format, per-file license headers,
+  dependency convergence.
+
+Maintainer and contact routes: [`MAINTAINERS.md`](MAINTAINERS.md).
+
 ## Why a prolly tree
 
 A prolly tree is a B-tree whose node boundaries are decided by a **rolling hash over the
@@ -41,7 +59,12 @@ change buys properties a classic B-tree cannot offer:
 
 Chunk boundaries roll a 67-byte BuzHash window over serialized entries, with a 512 B
 minimum and 16 KiB cap per chunk; balance is statistical, with deterministic guards for
-the pathological tails.
+the pathological tails: a *staircase* boundary mask that loosens progressively as a
+chunk grows, inside the hard min/cap bounds — measured tail at a 4,096 B target:
+p99 = 7,360 B, max = 8,640 B
+([boundary-function study](docs/foundations/boundary-function-performance.md)). If you
+are checking for the well-known chunk-imbalance flaw of naive content-defined chunking:
+that is the mitigation, and it is measured, not assumed.
 
 **Who this is for:** anyone building versioned, diffable, syncable storage on the JVM —
 a git-for-data experiment, a store that needs cheap point-in-time reads and O(changed)

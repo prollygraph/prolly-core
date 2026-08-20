@@ -2,6 +2,8 @@
 
 ## Reporting
 
+This channel is monitored by the maintainer named in [`MAINTAINERS.md`](MAINTAINERS.md).
+
 Please report suspected vulnerabilities **privately** via GitHub's security advisories
 ("Security" tab → "Report a vulnerability") rather than a public issue. If that path is
 unavailable, open an issue that says only "security — requesting a private channel"

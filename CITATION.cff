@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "prolly-core"
+abstract: >-
+  A Java port of the prolly tree — the content-addressed, history-independent,
+  probabilistically balanced search tree Dolt uses as its storage primitive —
+  with durable RocksDB- and file-backed stores and pack-based sync. Independent
+  of DoltHub, Inc.; own on-disk format.
+type: software
+version: 0.2.0-BETA
+license: Apache-2.0
+repository-code: "https://github.com/prollygraph/prolly-core"
+authors:
+  - given-names: Manny
+    family-names: Rivera
+    affiliation: Earasoft
+keywords:
+  - prolly-tree
+  - merkle-tree
+  - content-addressed
+  - version-control
+  - storage-engine
+  - database
+  - java
