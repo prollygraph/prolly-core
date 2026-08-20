@@ -34,6 +34,10 @@ primitive — plus the dependency-light durable substrate that makes it a usable
 - Build gates on every `mvn verify`: google-java-format, per-file license headers,
   dependency convergence.
 
+**Specifications:** [on-disk format](docs/spec/on-disk-format.md) ·
+[sync protocol](docs/spec/sync-protocol.md) — normative, constants cited to
+code, with verification maps.
+
 Maintainer and contact routes: [`MAINTAINERS.md`](MAINTAINERS.md).
 
 ## Why a prolly tree
