@@ -25,7 +25,7 @@
   <properties>
     <!-- a runnable service, not a library: never deployed to a Maven repository -->
     <maven.deploy.skip>true</maven.deploy.skip>
-    <spring-boot.version>4.0.6</spring-boot.version>
+    <spring-boot.version>4.1.0</spring-boot.version>
   </properties>
 
   <dependencyManagement>

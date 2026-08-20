@@ -47,21 +47,21 @@
   <properties>
     <rocksdb.version>8.10.0</rocksdb.version>
     <flatbuffers.version>23.5.26</flatbuffers.version>
-    <caffeine.version>3.1.8</caffeine.version>
-    <jqwik.version>1.9.2</jqwik.version>
+    <caffeine.version>3.2.4</caffeine.version>
+    <jqwik.version>1.10.1</jqwik.version>
     <!-- jspecify: the tool-neutral nullness annotation standard (@Nullable /
          @NullMarked) for the NullAway null-safety migration (plans/null-safety-migration.md
          D-3). NullAway, ErrorProne, IntelliJ and the Checker Framework all honor it.
          Compile-scoped + BOM-managed so each module annotated in the rollout adds the
          dep without a version. CLASS-retention annotations — present at compile, never
          loaded at runtime. -->
-    <jspecify.version>1.0.0</jspecify.version>
-    <slf4j.version>2.0.17</slf4j.version>
-    <logback.version>1.5.32</logback.version>
-    <log4j2.version>2.25.4</log4j2.version>
+    <jspecify.version>1.0.1</jspecify.version>
+    <slf4j.version>2.0.18</slf4j.version>
+    <logback.version>1.6.3</logback.version>
+    <log4j2.version>2.26.1</log4j2.version>
     <jackson-annotations.version>2.21</jackson-annotations.version>
-    <mockito.version>5.20.0</mockito.version>
-    <junit.version>6.0.3</junit.version>
+    <mockito.version>5.23.0</mockito.version>
+    <junit.version>6.1.3</junit.version>
   </properties>
 
   <dependencyManagement>
@@ -99,7 +99,7 @@
       <dependency>
         <groupId>io.grpc</groupId>
         <artifactId>grpc-bom</artifactId>
-        <version>1.75.0</version>
+        <version>1.83.1</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
