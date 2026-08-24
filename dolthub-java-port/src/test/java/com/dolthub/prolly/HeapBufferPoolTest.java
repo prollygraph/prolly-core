@@ -134,11 +134,11 @@ class HeapBufferPoolTest {
     }
 
     /**
-     * borrowRetained allocates EXACT size — no power-of-two, no 1024 floor. A retained key is
-     * never recycled (ADR-0062 D-3), so rounding is pure live-heap amplification: the 1 KiB floor
-     * turned every 42-byte staged quad key into 24× its size for a whole transaction (the
-     * measured bulk-ingest OOM this method exists to end). The backing array length is the proof —
-     * a segment slice could lie about it.
+     * borrowRetained allocates EXACT size — no power-of-two, no 1024 floor. A retained key is never
+     * recycled (ADR-0062 D-3), so rounding is pure live-heap amplification: the 1 KiB floor turned
+     * every 42-byte staged quad key into 24× its size for a whole transaction (the measured
+     * bulk-ingest OOM this method exists to end). The backing array length is the proof — a segment
+     * slice could lie about it.
      */
     @Test
     void borrowRetainedAllocatesExactSizeWithNoFloor() {

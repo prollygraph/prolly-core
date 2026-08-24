@@ -185,10 +185,10 @@ public class MutableMap {
      * As {@link #MutableMap(StaticMap, NodeStore, TupleDescriptor, BufferPool, Comparator)}, with
      * the edit buffer's opt-in <b>presence index</b> at the default spill threshold (see {@link
      * SpillableSortedBuffer#SpillableSortedBuffer(Comparator, KeyCodec, long, Path, boolean)} for
-     * the contract — enable only for canonical key encodings where comparator equality implies
-     * byte equality). The dictionary is the intended caller: its per-term dedup {@code get} is the
-     * measured quadratic wall once the buffer spills, and the index answers absent first
-     * encounters from heap instead of walking every run file.
+     * the contract — enable only for canonical key encodings where comparator equality implies byte
+     * equality). The dictionary is the intended caller: its per-term dedup {@code get} is the
+     * measured quadratic wall once the buffer spills, and the index answers absent first encounters
+     * from heap instead of walking every run file.
      */
     public MutableMap(
             StaticMap base,
@@ -209,7 +209,14 @@ public class MutableMap {
             @Nullable Comparator<Tuple> comparator,
             long spillThresholdBytes,
             boolean presenceIndex) {
-        this(base, store, descriptor, pool, comparator, spillThresholdBytes, SPILL_DIR,
+        this(
+                base,
+                store,
+                descriptor,
+                pool,
+                comparator,
+                spillThresholdBytes,
+                SPILL_DIR,
                 presenceIndex);
     }
 

@@ -658,8 +658,8 @@ class SpillableSortedBufferTest {
     // ── the opt-in presence index ───────────────────────────────────────────
 
     /**
-     * Oracle equivalence: the SAME operation sequence, index off vs on, must give identical
-     * lookup answers and an identical merged() stream — the index is a pure accelerator.
+     * Oracle equivalence: the SAME operation sequence, index off vs on, must give identical lookup
+     * answers and an identical merged() stream — the index is a pure accelerator.
      */
     @Test
     void presenceIndexIsObservationallyEquivalentToTheProbePath(@TempDir Path dir)

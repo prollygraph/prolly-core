@@ -193,8 +193,8 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
      * key's codec bytes, fed on {@link #put} and consulted before any spilled-run probe, so an
      * ABSENT-key {@link #get}/{@link #containsKey} answers from one array probe instead of a file
      * open plus up-to-a-stride of entry decodes <i>per run</i>. That per-run walk is the measured
-     * quadratic wall of a bulk load's dictionary dedup (distinct keys grow with the transaction;
-     * so does the run count).
+     * quadratic wall of a bulk load's dictionary dedup (distinct keys grow with the transaction; so
+     * does the run count).
      *
      * @apiNote <b>Contract:</b> enable only when {@code keyComparator} equality implies {@code
      *     codec.toBytes} byte-equality (canonical, fixed-width key encodings — the dictionary's
@@ -258,7 +258,8 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
         // Before even the tail: every staged key (tail or run) was put, and
         // every put registered — an index miss is an authoritative absent
         // under the constructor's canonical-keys contract.
-        if (presence != null && !presence.mightContain(LongPresenceSet.hashBytes(codec.toBytes(key))))
+        if (presence != null
+                && !presence.mightContain(LongPresenceSet.hashBytes(codec.toBytes(key))))
             return false;
         if (tail.containsKey(key)) return true;
         for (int i = runs.size() - 1; i >= 0; i--) {
@@ -273,7 +274,8 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
      * {@code TreeMap}: check {@link #containsKey} to distinguish).
      */
     public @Nullable MemorySegment get(K key) {
-        if (presence != null && !presence.mightContain(LongPresenceSet.hashBytes(codec.toBytes(key))))
+        if (presence != null
+                && !presence.mightContain(LongPresenceSet.hashBytes(codec.toBytes(key))))
             return null;
         if (tail.containsKey(key)) return tail.get(key);
         for (int i = runs.size() - 1; i >= 0; i--) {
