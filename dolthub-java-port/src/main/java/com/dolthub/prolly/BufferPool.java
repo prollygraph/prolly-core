@@ -54,6 +54,23 @@ public interface BufferPool extends AutoCloseable {
     MemorySegment borrow(int size);
 
     /**
+     * A segment the caller will RETAIN until flush — a staged key held in {@code
+     * MutableMap.edits}, never {@link #release}d (ADR-0062 D-3 forbids it). Bucket rounding buys
+     * such a segment nothing: it is never recycled, so uniform sizing serves no free-list, while
+     * the round-up is pure live-heap amplification for exactly as long as the transaction stages
+     * it. Measured shape: a 42-byte quad key retained through a 10M-statement single transaction
+     * pinned a 1 KiB block per index insert — the write path's OutOfMemoryError in the consumer's
+     * bulk-ingest trace — while the spill trigger accounted the 42-byte slice.
+     *
+     * <p>The default delegates to {@link #borrow} so arena-backed pools keep their bucket layout
+     * (their retention hazard is the arena lifetime, not the rounding); heap-backed pools override
+     * to allocate exact-size.
+     */
+    default MemorySegment borrowRetained(int size) {
+        return borrow(size);
+    }
+
+    /**
      * Recycles a previously {@link #borrow}ed segment back to the pool for reuse — the fine-grained
      * counterpart to {@link #newTransactionScope()}'s wholesale free (ADR-0062). The default is a
      * no-op: a garbage-collected pool (e.g. {@link HeapBufferPool}) has nothing to reclaim — the

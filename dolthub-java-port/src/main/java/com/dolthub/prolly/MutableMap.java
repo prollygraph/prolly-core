@@ -178,7 +178,28 @@ public class MutableMap {
             BufferPool pool,
             @Nullable Comparator<Tuple> comparator,
             long spillThresholdBytes) {
-        this(base, store, descriptor, pool, comparator, spillThresholdBytes, SPILL_DIR);
+        this(base, store, descriptor, pool, comparator, spillThresholdBytes, SPILL_DIR, false);
+    }
+
+    /**
+     * As {@link #MutableMap(StaticMap, NodeStore, TupleDescriptor, BufferPool, Comparator, long)},
+     * with the edit buffer's opt-in <b>presence index</b> (see {@link
+     * SpillableSortedBuffer#SpillableSortedBuffer(Comparator, KeyCodec, long, Path, boolean)} for
+     * the contract — enable only for canonical key encodings where comparator equality implies
+     * byte equality). The dictionary is the intended caller: its per-term dedup {@code get} is the
+     * measured quadratic wall once the buffer spills, and the index answers absent first
+     * encounters from heap instead of walking every run file.
+     */
+    public MutableMap(
+            StaticMap base,
+            NodeStore store,
+            TupleDescriptor descriptor,
+            BufferPool pool,
+            @Nullable Comparator<Tuple> comparator,
+            long spillThresholdBytes,
+            boolean presenceIndex) {
+        this(base, store, descriptor, pool, comparator, spillThresholdBytes, SPILL_DIR,
+                presenceIndex);
     }
 
     /**
@@ -195,6 +216,19 @@ public class MutableMap {
             @Nullable Comparator<Tuple> comparator,
             long spillThresholdBytes,
             Path tempDir) {
+        this(base, store, descriptor, pool, comparator, spillThresholdBytes, tempDir, false);
+    }
+
+    /** As above, carrying the edit buffer's presence-index opt-in. */
+    MutableMap(
+            StaticMap base,
+            NodeStore store,
+            TupleDescriptor descriptor,
+            BufferPool pool,
+            @Nullable Comparator<Tuple> comparator,
+            long spillThresholdBytes,
+            Path tempDir,
+            boolean presenceIndex) {
         this.base = base;
         this.store = store;
         this.descriptor = descriptor;
@@ -206,7 +240,9 @@ public class MutableMap {
         // Tuples already, so the comparator allocates nothing.
         Comparator<Tuple> cmp =
                 comparator != null ? comparator : (a, b) -> descriptor.compare(a, b);
-        this.edits = new SpillableSortedBuffer<>(cmp, TUPLE_CODEC, spillThresholdBytes, tempDir);
+        this.edits =
+                new SpillableSortedBuffer<>(
+                        cmp, TUPLE_CODEC, spillThresholdBytes, tempDir, presenceIndex);
     }
 
     public void put(MemorySegment key, MemorySegment value) {

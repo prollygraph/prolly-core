@@ -50,6 +50,17 @@ public final class HeapBufferPool implements BufferPool, AutoCloseable {
         return MemorySegment.ofArray(new byte[nextPowerOfTwo(size)]);
     }
 
+    /**
+     * Exact-size, no floor: a retained key is never recycled (ADR-0062 D-3), so the power-of-two
+     * bucket layout that {@link #borrow}'s rounding mirrors buys nothing here — it only multiplies
+     * live heap for the transaction's lifetime (the 1024-byte floor turned every 42-byte staged
+     * quad key into 24× its size in the consumer's measured bulk-ingest OOM).
+     */
+    @Override
+    public MemorySegment borrowRetained(int size) {
+        return MemorySegment.ofArray(new byte[Math.max(size, 1)]);
+    }
+
     private static int nextPowerOfTwo(int n) {
         if (n <= 0) return 1024;
         n--;

@@ -654,4 +654,92 @@ class SpillableSortedBufferTest {
                 "tailBytes hits the threshold exactly at the 5th entry → `>=` spills; the `>` boundary mutant would not");
         buf.close();
     }
+
+    // ── the opt-in presence index ───────────────────────────────────────────
+
+    /**
+     * Oracle equivalence: the SAME operation sequence, index off vs on, must give identical
+     * lookup answers and an identical merged() stream — the index is a pure accelerator.
+     */
+    @Test
+    void presenceIndexIsObservationallyEquivalentToTheProbePath(@TempDir Path dir)
+            throws IOException {
+        SpillableSortedBuffer<MemorySegment> plain =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 64, dir.resolve("p"));
+        SpillableSortedBuffer<MemorySegment> indexed =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 64, dir.resolve("i"), true);
+        Files.createDirectories(dir.resolve("p"));
+        Files.createDirectories(dir.resolve("i"));
+        java.util.Random rnd = new java.util.Random(11);
+        for (int i = 0; i < 400; i++) {
+            String k = "k" + rnd.nextInt(60);
+            if (rnd.nextInt(4) == 0) {
+                plain.put(seg(k), null);
+                indexed.put(seg(k), null);
+            } else {
+                String v = "v" + rnd.nextInt(1000);
+                plain.put(seg(k), seg(v));
+                indexed.put(seg(k), seg(v));
+            }
+        }
+        assertTrue(indexed.spilledRunCount() >= 3, "the indexed buffer must be in spill regime");
+        for (int i = 0; i < 120; i++) { // present, tombstoned, and absent keys alike
+            String k = "k" + i;
+            assertEquals(plain.containsKey(seg(k)), indexed.containsKey(seg(k)), k);
+            assertEquals(str(plain.get(seg(k))), str(indexed.get(seg(k))), k);
+        }
+        try (SpillableSortedBuffer.CloseableEntryIterator<MemorySegment> a = plain.merged();
+                SpillableSortedBuffer.CloseableEntryIterator<MemorySegment> b = indexed.merged()) {
+            while (a.hasNext() || b.hasNext()) {
+                assertEquals(a.hasNext(), b.hasNext(), "stream lengths must match");
+                SpillableSortedBuffer.Entry<MemorySegment> ea = a.next(), eb = b.next();
+                assertEquals(str(ea.key()), str(eb.key()));
+                assertEquals(str(ea.value()), str(eb.value()));
+            }
+        }
+        plain.close();
+        indexed.close();
+    }
+
+    @Test
+    void tombstonesStayContainedWithThePresenceIndex(@TempDir Path dir) {
+        SpillableSortedBuffer<MemorySegment> buf =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 64, dir, true);
+        buf.put(seg("gone"), seg("v"));
+        buf.put(seg("gone"), null); // tombstone — a put, so the index knows it
+        forceSpill(buf);
+        assertTrue(buf.containsKey(seg("gone")), "tombstoned is contained");
+        assertEquals(null, buf.get(seg("gone")), "…but its value is the tombstone null");
+        assertEquals(false, buf.containsKey(seg("never")), "absent short-circuits correctly");
+        buf.close();
+    }
+
+    @Test
+    void clearResetsThePresenceIndexForReuse(@TempDir Path dir) {
+        SpillableSortedBuffer<MemorySegment> buf =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 64, dir, true);
+        forceSpill(buf);
+        assertTrue(buf.presenceSizeForTest() > 0);
+        buf.clear();
+        assertEquals(0, buf.presenceSizeForTest(), "clear resets the index with everything else");
+        buf.put(seg("again"), seg("v")); // reusable, index live again
+        assertTrue(buf.containsKey(seg("again")));
+        assertEquals(1, buf.presenceSizeForTest());
+        buf.close();
+    }
+
+    @Test
+    void thePresenceIndexRegistersEveryDistinctPut(@TempDir Path dir) {
+        SpillableSortedBuffer<MemorySegment> off =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 1 << 20, dir);
+        assertEquals(-1, off.presenceSizeForTest(), "off means off");
+        off.close();
+
+        SpillableSortedBuffer<MemorySegment> on =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 1 << 20, dir, true);
+        for (int i = 0; i < 100; i++) on.put(seg("k" + i), seg("v"));
+        for (int i = 0; i < 100; i++) on.put(seg("k" + i), seg("w")); // overwrites: same keys
+        assertEquals(100, on.presenceSizeForTest(), "overwrites add no new distinct keys");
+        on.close();
+    }
 }

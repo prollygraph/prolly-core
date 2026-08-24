@@ -153,6 +153,7 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
      */
     private long maxSpillDiskBytes = Long.getLong("prolly.spill.max-disk-bytes", 0L);
 
+    private final @Nullable LongPresenceSet presence; // opt-in absent-key index; null = off
     private final TreeMap<K, @Nullable MemorySegment> tail; // the in-heap, newest edits
     private long tailBytes;
     private final List<Run> runs = new ArrayList<>(); // oldest first; index = recency rank
@@ -183,11 +184,39 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
             KeyCodec<K> codec,
             long spillThresholdBytes,
             Path tempDir) {
+        this(keyComparator, codec, spillThresholdBytes, tempDir, false);
+    }
+
+    /**
+     * As {@link #SpillableSortedBuffer(Comparator, KeyCodec, long, Path)}, with an opt-in in-heap
+     * <b>presence index</b>: a set of {@link LongPresenceSet#hashBytes} hashes of every staged
+     * key's codec bytes, fed on {@link #put} and consulted before any spilled-run probe, so an
+     * ABSENT-key {@link #get}/{@link #containsKey} answers from one array probe instead of a file
+     * open plus up-to-a-stride of entry decodes <i>per run</i>. That per-run walk is the measured
+     * quadratic wall of a bulk load's dictionary dedup (distinct keys grow with the transaction;
+     * so does the run count).
+     *
+     * @apiNote <b>Contract:</b> enable only when {@code keyComparator} equality implies {@code
+     *     codec.toBytes} byte-equality (canonical, fixed-width key encodings — the dictionary's
+     *     single-column Int64 tuples are the intended user). The index under-approximates
+     *     <i>presence</i> never <i>absence</i>: a hash collision merely falls through to the
+     *     ordinary probes, but a comparator-equal-yet-byte-different key pair would make "absent"
+     *     WRONG, which is why this is a constructor opt-in and not a default. Memory is ~16 bytes
+     *     per distinct staged key for the buffer's lifetime — precisely the trade that replaces
+     *     keeping a whole dictionary in heap. Reset by {@link #clear()} with everything else.
+     */
+    public SpillableSortedBuffer(
+            Comparator<K> keyComparator,
+            KeyCodec<K> codec,
+            long spillThresholdBytes,
+            Path tempDir,
+            boolean presenceIndex) {
         this.keyCmp = keyComparator;
         this.codec = codec;
         this.spillThresholdBytes = spillThresholdBytes;
         this.tempDir = tempDir;
         this.tail = new TreeMap<>(keyComparator);
+        this.presence = presenceIndex ? new LongPresenceSet() : null;
     }
 
     private static Runnable cleanup(List<RunFile> files) {
@@ -215,13 +244,22 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
      */
     public void put(K key, @Nullable MemorySegment value) {
         MemorySegment prev = tail.put(key, value);
-        tailBytes += codec.toBytes(key).byteSize() + (value == null ? 0 : value.byteSize()) + 48;
+        MemorySegment keyBytes = codec.toBytes(key); // one call feeds accounting AND the index
+        tailBytes += keyBytes.byteSize() + (value == null ? 0 : value.byteSize()) + 48;
         if (prev != null) tailBytes -= prev.byteSize();
+        // Tombstones register too: a deleted key is CONTAINED (as a tombstone),
+        // so the index must say "maybe" for it, and does — delete is a put.
+        if (presence != null) presence.add(LongPresenceSet.hashBytes(keyBytes));
         if (tailBytes >= spillThresholdBytes && tail.size() > 1) spill();
     }
 
     /** True if the buffer holds any entry for {@code key} (an insert <i>or</i> a tombstone). */
     public boolean containsKey(K key) {
+        // Before even the tail: every staged key (tail or run) was put, and
+        // every put registered — an index miss is an authoritative absent
+        // under the constructor's canonical-keys contract.
+        if (presence != null && !presence.mightContain(LongPresenceSet.hashBytes(codec.toBytes(key))))
+            return false;
         if (tail.containsKey(key)) return true;
         for (int i = runs.size() - 1; i >= 0; i--) {
             if (runs.get(i).lookup(key) != null)
@@ -235,6 +273,8 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
      * {@code TreeMap}: check {@link #containsKey} to distinguish).
      */
     public @Nullable MemorySegment get(K key) {
+        if (presence != null && !presence.mightContain(LongPresenceSet.hashBytes(codec.toBytes(key))))
+            return null;
         if (tail.containsKey(key)) return tail.get(key);
         for (int i = runs.size() - 1; i >= 0; i--) {
             Lookup lk = runs.get(i).lookup(key);
@@ -291,6 +331,11 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
         return runs.isEmpty() ? -1 : runs.get(0).idxKeys.size();
     }
 
+    /** Distinct keys the presence index holds, or {@code -1} when the index is off. */
+    int presenceSizeForTest() {
+        return presence == null ? -1 : presence.size();
+    }
+
     /**
      * A sorted, ascending, last-write-wins iterator over the tail + every run — the flush stream.
      */
@@ -327,6 +372,10 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
         runs.clear();
         tail.clear();
         tailBytes = 0;
+        // The buffer is documented reusable post-clear (a flush calls this);
+        // stale hashes would not be WRONG for a filter, but they would poison
+        // the reused transaction with false positives — reset with the rest.
+        if (presence != null) presence.clear();
     }
 
     @Override

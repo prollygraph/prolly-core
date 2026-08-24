@@ -124,9 +124,30 @@ class SpillableSortedBufferModelProperty {
         chain.run();
     }
 
+    /**
+     * The SAME chains with the presence index ON. Legitimate here by the index's contract: LEX
+     * equality holds exactly for byte-identical segments, so comparator equality implies
+     * byte-equality and an index miss must be a true absent. Any divergence from the model under
+     * any interleaving (spill, partial merge, clear-then-reuse, tombstones) is an index bug.
+     */
+    @Property(tries = 600)
+    void bufferWithPresenceIndexMatchesModelAcrossActionChains(
+            @ForAll("presenceChains") ActionChain<Model> chain) {
+        chain.run();
+    }
+
+    @Provide
+    ActionChainArbitrary<Model> presenceChains() {
+        return chainsWith(() -> new Model(SPILL_THRESHOLD, tempDir, true));
+    }
+
     @Provide
     ActionChainArbitrary<Model> chains() {
-        return ActionChain.startWith(() -> new Model(SPILL_THRESHOLD, tempDir))
+        return chainsWith(() -> new Model(SPILL_THRESHOLD, tempDir, false));
+    }
+
+    private ActionChainArbitrary<Model> chainsWith(java.util.function.Supplier<Model> fresh) {
+        return ActionChain.startWith(fresh::get)
                 // weighted toward mutation so the buffer keeps growing + spilling; clear/merged are
                 // rarer
                 .withAction(put())
@@ -189,9 +210,9 @@ class SpillableSortedBufferModelProperty {
         final TreeMap<String, byte[]> ref = new TreeMap<>(); // null value = tombstone
         final Path dir;
 
-        Model(long threshold, Path dir) {
+        Model(long threshold, Path dir, boolean presenceIndex) {
             this.dir = dir;
-            buf = new SpillableSortedBuffer<>(LEX, IDENTITY, threshold, dir);
+            buf = new SpillableSortedBuffer<>(LEX, IDENTITY, threshold, dir, presenceIndex);
         }
 
         /**
