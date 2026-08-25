@@ -108,5 +108,5 @@ in-protocol signature scheme — the content address *is* the integrity check.
 | pre-1.0 no-compat posture | `prolly-sync/README.md` §Status |
 
 > Historical note: `SyncPackCodec`'s javadoc cites a
-> `docs/distributed_sync_protocol.md` that predates the repo split and is not
-> present here; this document supersedes that reference.
+> `distributed_sync_protocol.md` (under the old docs tree) that predates the
+> repo split and is not present here; this document supersedes that reference.

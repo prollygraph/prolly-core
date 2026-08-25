@@ -15,8 +15,8 @@ supported transition. Entries below are release-level; day-to-day history is the
   an index-stride of decodes per spilled run. Contract-gated in the constructor (comparator
   equality must imply codec byte-equality — canonical fixed-width keys); the RDF ring's
   dictionary is the intended and first user: its per-term dedup was measured O(runs) per first
-  encounter, the quadratic bulk-encode wall (consumer trace: quarkus-ontology-editor
-  `docs/benchmarks/ncit-runs/one-flush-probe.txt`). The existing 600-try ActionChain model
+  encounter, the quadratic bulk-encode wall (consumer trace: quarkus-ontology-editor,
+  benchmarks `ncit-runs/one-flush-probe.txt`). The existing 600-try ActionChain model
   property runs the same chains with the index on.
 - **`BufferPool.borrowRetained` — exact-size allocation for staged keys.** A key retained in
   `MutableMap.edits` until flush is never recycled (ADR-0062 D-3), so `HeapBufferPool`'s 1 KiB

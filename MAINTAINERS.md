@@ -11,7 +11,7 @@ everything in the repository regardless of how it was produced.
 
 ## Contact routes
 
-- **Bugs and feature requests:** [GitHub issues](../../issues) on this repository.
+- **Bugs and feature requests:** [GitHub issues](https://github.com/prollygraph/prolly-core/issues) on this repository.
 - **Security reports:** the private route in [`SECURITY.md`](SECURITY.md) — GitHub
   security advisories ("Report a vulnerability"), monitored by the maintainer above.
 - **Conduct concerns:** the same private route, per
