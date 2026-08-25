@@ -784,6 +784,77 @@ class SpillableSortedBufferTest {
         unfiltered.close();
     }
 
+    /**
+     * THE COST PIN for the hit-side point-lookup path (hardening round 1, promoted from the manual
+     * {@code PresenceScaleProbe} measurement: hit walks fell ~1.8 ms → 151 µs when per-run filters
+     * landed — this asserts the same claim as deterministic FILE-PROBE COUNTS, so a regression
+     * gates the build instead of waiting for a human to re-run the probe).
+     *
+     * <p>Data engineered so the min/max screen CANNOT prune (the middle-range era-1 keys are
+     * bracketed by every later run, like real hash-shaped dictionary keys): era 1 stages the
+     * looked-up keys; eras 2..5 stage disjoint keys on BOTH sides of them. Unfiltered, a hit on an
+     * era-1 key must file-probe every newer run before reaching its run; with per-run filters,
+     * newer runs REJECT without opening. The pin: filtered probes stay ~1 per lookup (plus a
+     * generous false-positive allowance), and the filtered:unfiltered ratio is at least 2×.
+     */
+    @Test
+    void perRunFiltersBoundHitPathFileProbes(@TempDir Path dir) throws IOException {
+        SpillableSortedBuffer<MemorySegment> filtered =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 64, dir.resolve("f"), true);
+        SpillableSortedBuffer<MemorySegment> unfiltered =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 64, dir.resolve("u"), true);
+        unfiltered.setRunFilterBudgetBytesForTest(0);
+        Files.createDirectories(dir.resolve("f"));
+        Files.createDirectories(dir.resolve("u"));
+        // Era 1: the keys we will look up — the MIDDLE of the key space.
+        for (int i = 0; i < 25; i++) {
+            String k = String.format("k-5%02d", i); // k-500..k-524
+            filtered.put(seg(k), seg("era1"));
+            unfiltered.put(seg(k), seg("era1"));
+        }
+        // Eras 2..5: disjoint keys bracketing era 1 on both sides, so every
+        // later run's [min,max] contains the era-1 keys and the screen is dead.
+        for (int era = 2; era <= 5; era++) {
+            for (int i = 0; i < 13; i++) {
+                String lo = String.format("k-1%02d-e%d", i, era);
+                String hi = String.format("k-9%02d-e%d", i, era);
+                filtered.put(seg(lo), seg("x"));
+                filtered.put(seg(hi), seg("x"));
+                unfiltered.put(seg(lo), seg("x"));
+                unfiltered.put(seg(hi), seg("x"));
+            }
+        }
+        forceSpill(filtered); // both tails sealed: every key now lives in a run
+        forceSpill(unfiltered);
+        assertTrue(filtered.spilledRunCount() >= 4, "need several runs for the walk to matter");
+        int lookups = 25;
+        long f0 = SpillableSortedBuffer.totalRunFileProbes();
+        for (int i = 0; i < lookups; i++) {
+            assertEquals("era1", str(filtered.get(seg(String.format("k-5%02d", i)))));
+        }
+        long filteredProbes = SpillableSortedBuffer.totalRunFileProbes() - f0;
+        long u0 = SpillableSortedBuffer.totalRunFileProbes();
+        for (int i = 0; i < lookups; i++) {
+            assertEquals("era1", str(unfiltered.get(seg(String.format("k-5%02d", i)))));
+        }
+        long unfilteredProbes = SpillableSortedBuffer.totalRunFileProbes() - u0;
+        assertTrue(
+                filteredProbes <= lookups * 2L,
+                "with per-run filters a hit is ~one file probe (got "
+                        + filteredProbes
+                        + " for "
+                        + lookups
+                        + " lookups; 2x bound allows filter false positives)");
+        assertTrue(
+                unfilteredProbes >= filteredProbes * 2,
+                "the filters must actually be doing the skipping: unfiltered="
+                        + unfilteredProbes
+                        + " vs filtered="
+                        + filteredProbes);
+        filtered.close();
+        unfiltered.close();
+    }
+
     /** The single-walk three-way: newest value, tombstone null, or the ABSENT sentinel. */
     @Test
     void getRawDistinguishesPresentTombstoneAbsentInOneWalk(@TempDir Path dir) {

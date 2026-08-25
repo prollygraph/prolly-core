@@ -105,6 +105,23 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
     }
 
     /**
+     * Process-global count of spilled-run FILE PROBES (a {@link Run#lookup} that got past the
+     * min/max screen and opened the run file) — the deterministic cost dial behind the point-lookup
+     * path. The presence index bounds the ABSENT side and the per-run filters bound the PRESENT
+     * side of this exact number; the cost pin in the test suite asserts both stay bounded (counts,
+     * not wall-clock — the suite's regression gate for the measured 3.6 ms-per-walk pathology).
+     * Static for the same reason as {@link #TOTAL_SPILLS}: buffers are per-transaction and
+     * transient.
+     */
+    private static final java.util.concurrent.atomic.LongAdder TOTAL_RUN_FILE_PROBES =
+            new java.util.concurrent.atomic.LongAdder();
+
+    /** Total run-file point-probe opens since process start (telemetry; monotonic). */
+    public static long totalRunFileProbes() {
+        return TOTAL_RUN_FILE_PROBES.sum();
+    }
+
+    /**
      * Process-global bytes of spill run files <b>currently resident on disk</b> across all buffers
      * — the source for the {@code prolly.tx.spill.disk.bytes} gauge and the spill-disk quota.
      * Unlike {@link #TOTAL_SPILLS} (a monotonic count), this <i>rises</i> on each spill write and
@@ -602,6 +619,7 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
             if (min == null || keyCmp.compare(key, min) < 0 || keyCmp.compare(key, max) > 0)
                 return null;
             int block = floorBlock(key);
+            TOTAL_RUN_FILE_PROBES.increment(); // past the screens: a real file open follows
             try (DataInputStream in = openAt(idxOffsets.get(block))) {
                 int limit = (block + 1 < idxOffsets.size()) ? INDEX_STRIDE : Integer.MAX_VALUE;
                 for (int i = 0; i < limit; i++) {
