@@ -48,6 +48,10 @@
       <groupId>com.github.ben-manes.caffeine</groupId>
       <artifactId>caffeine</artifactId>
     </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-collections4</artifactId>
+    </dependency>
     <!-- jspecify nullness annotations (@Nullable). dolthub-java-port is the first
          module annotated for NullAway (plans/null-safety-migration.md, the
          foundational dependency-leaf per D-4). CLASS-retention — compile-only. -->

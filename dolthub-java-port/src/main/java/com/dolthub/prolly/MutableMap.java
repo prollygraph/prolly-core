@@ -169,8 +169,12 @@ public class MutableMap {
      * prolly.tx.spill.bytes}. Historically this was the ONLY escape from the build-once encode wall
      * (the dictionary's per-term dedup {@code get} is {@code O(runs)} once spilled —
      * plans/prolly-bulk-load.md Phase 2, D-3), so bulk loads kept the dict buffer in-heap here;
-     * with the presence-index overloads below, a SPILLED dictionary encodes in amortized O(1) per
-     * term too, and this threshold demotes to an ordinary heap-vs-disk tuning knob.
+     * with the presence-index overloads below, a spilled dictionary's ABSENT probes (first
+     * encounters) answer in O(1) from the index and its PRESENT probes (dedupe hits) read ~one run
+     * block via the per-run filters — both up to the structures' heap-aware byte budgets, degrading
+     * gracefully past them (see {@code SpillableSortedBuffer}'s five-argument constructor); loads
+     * far beyond any budget belong on a batched commit cadence. This threshold thus demotes to an
+     * ordinary heap-vs-disk tuning knob.
      */
     public MutableMap(
             StaticMap base,
@@ -279,8 +283,13 @@ public class MutableMap {
     public Optional<MemorySegment> get(MemorySegment key) {
         if (key == null) throw new IllegalArgumentException("key must not be null");
         Tuple tk = new Tuple(key);
-        if (edits.containsKey(tk)) {
-            return Optional.ofNullable(edits.get(tk));
+        // ONE buffer walk for the present/tombstone/absent three-way, not a
+        // containsKey walk followed by an identical get walk: on a spilled
+        // buffer each walk is file I/O, and the dedup hot path (a bulk load's
+        // repeated-term majority) was paying it twice per hit.
+        Object staged = edits.getRaw(tk);
+        if (staged != SpillableSortedBuffer.ABSENT) {
+            return Optional.ofNullable((MemorySegment) staged);
         }
         return base.get(key);
     }

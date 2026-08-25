@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -741,5 +742,103 @@ class SpillableSortedBufferTest {
         for (int i = 0; i < 100; i++) on.put(seg("k" + i), seg("w")); // overwrites: same keys
         assertEquals(100, on.presenceSizeForTest(), "overwrites add no new distinct keys");
         on.close();
+    }
+
+    // ── per-run filters (the hit-side complement to the presence index) ─────
+
+    /**
+     * Every sealed run of a presence-enabled buffer carries a filter, and lookups stay correct
+     * through the filter-skip path (a present key's newest value found even when newer runs'
+     * filters reject it). With the filter byte budget at zero, runs seal filterless and the same
+     * lookups take the plain walk — the graceful-degradation path.
+     */
+    @Test
+    void perRunFiltersAcceleratePresentKeysAndDegradeGracefully(@TempDir Path dir)
+            throws IOException {
+        SpillableSortedBuffer<MemorySegment> filtered =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 64, dir.resolve("f"), true);
+        SpillableSortedBuffer<MemorySegment> unfiltered =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 64, dir.resolve("u"), true);
+        Files.createDirectories(dir.resolve("f"));
+        Files.createDirectories(dir.resolve("u"));
+        unfiltered.setRunFilterBudgetBytesForTest(0);
+        for (int i = 0; i < 200; i++) {
+            String k = "k" + (i % 50), v = "v" + i; // overwrites spread keys across many runs
+            filtered.put(seg(k), seg(v));
+            unfiltered.put(seg(k), seg(v));
+        }
+        assertTrue(filtered.spilledRunCount() >= 3, "must be in spill regime");
+        assertEquals(
+                filtered.spilledRunCount(),
+                filtered.runFilterCountForTest(),
+                "every sealed run carries a filter within budget");
+        assertEquals(0, unfiltered.runFilterCountForTest(), "budget zero seals runs filterless");
+        for (int i = 0; i < 60; i++) { // present keys and absent keys alike, both buffers agree
+            String k = "k" + i;
+            assertEquals(str(unfiltered.get(seg(k))), str(filtered.get(seg(k))), k);
+            assertEquals(unfiltered.containsKey(seg(k)), filtered.containsKey(seg(k)), k);
+        }
+        filtered.clear();
+        assertEquals(0, filtered.runFilterCountForTest(), "clear drops the filters with the runs");
+        filtered.close();
+        unfiltered.close();
+    }
+
+    /** The single-walk three-way: newest value, tombstone null, or the ABSENT sentinel. */
+    @Test
+    void getRawDistinguishesPresentTombstoneAbsentInOneWalk(@TempDir Path dir) {
+        SpillableSortedBuffer<MemorySegment> buf =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 64, dir, true);
+        assertSame(
+                SpillableSortedBuffer.ABSENT,
+                buf.getRaw(seg("x")),
+                "an empty buffer answers absent before any hashing");
+        buf.put(seg("alive"), seg("v1"));
+        buf.put(seg("dead"), seg("v"));
+        buf.put(seg("dead"), null);
+        forceSpill(buf);
+        buf.put(seg("alive"), seg("v2")); // newest value lives in the tail, older in a run
+        assertEquals("v2", str((MemorySegment) buf.getRaw(seg("alive"))));
+        assertEquals(null, buf.getRaw(seg("dead")), "a tombstone is a present null");
+        assertSame(SpillableSortedBuffer.ABSENT, buf.getRaw(seg("never")));
+        buf.close();
+    }
+
+    /**
+     * A run file whose deletion fails must stay TRACKED and COUNTED: dropping it would under-count
+     * the spill-disk quota gauge while the bytes sit resident (the fail-closed quota's one blind
+     * spot), and forgetting the path forfeits the retry. The next cleanup retries and succeeds.
+     */
+    @Test
+    void failedRunFileDeletionKeepsQuotaAndTrackingForRetry(@TempDir Path dir) throws IOException {
+        Path runDir = Files.createDirectories(dir.resolve("locked"));
+        SpillableSortedBuffer<MemorySegment> buf =
+                new SpillableSortedBuffer<>(LEX, IDENTITY, 64, runDir);
+        forceSpill(buf);
+        assertTrue(buf.runFileCountForTest() > 0);
+        long before = SpillableSortedBuffer.currentSpillDiskBytes();
+        java.util.Set<java.nio.file.attribute.PosixFilePermission> rw =
+                Files.getPosixFilePermissions(runDir);
+        Files.setPosixFilePermissions(
+                runDir,
+                java.util.Set.of(
+                        java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                        java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE));
+        try {
+            buf.clear();
+            assertTrue(
+                    buf.runFileCountForTest() > 0,
+                    "failed deletion keeps the run file tracked for retry");
+            assertEquals(
+                    before,
+                    SpillableSortedBuffer.currentSpillDiskBytes(),
+                    "the quota gauge still counts the undeleted bytes");
+        } finally {
+            Files.setPosixFilePermissions(runDir, rw);
+        }
+        buf.clear(); // the retry: deletion now succeeds
+        assertEquals(0, buf.runFileCountForTest());
+        assertTrue(SpillableSortedBuffer.currentSpillDiskBytes() <= before);
+        buf.close();
     }
 }

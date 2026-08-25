@@ -112,6 +112,11 @@
            dependencyConvergence gate): caffeine and guava each drag a
            different checker-qual; pin to the highest on any path. -->
       <dependency>
+        <groupId>org.apache.commons</groupId>
+        <artifactId>commons-collections4</artifactId>
+        <version>4.6.0</version>
+      </dependency>
+      <dependency>
         <groupId>org.checkerframework</groupId>
         <artifactId>checker-qual</artifactId>
         <version>3.43.0</version>

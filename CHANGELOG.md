@@ -8,6 +8,25 @@ supported transition. Entries below are release-level; day-to-day history is the
 
 ### Engine
 
+- **The Bloom tier now rides a hardened library, and every sealed run gets its own filter.**
+  The presence index's past-budget tier is Apache Commons Collections 4.6.0
+  (`SimpleBloomFilter` + `EnhancedDoubleHasher` — a vetted implementation of enhanced double
+  hashing, the exact defect class the hand-rolled blocked filter it replaces got wrong:
+  correlated block/stride bits measured at ~20% false positives against a ~0.5% theory line;
+  consumer trace `ncit-runs/presence-scale-probe.txt`), sharded above one filter's 2^31-bit
+  cap (partitioned-Bloom, FP-neutral). And spilling now builds a per-run Bloom filter from
+  exactly the sealed run's keys (`Shape.fromNP`, ~1.2 B per staged entry, same budget family,
+  runs seal filterless past it): a reject PROVES the key is not in that run, so a dedupe HIT
+  probes ~one run file instead of walking O(runs) — the hit-side wall the adversarial
+  re-review confirmed the first presence round left standing. `SpillableSortedBuffer` point
+  lookups collapsed to one walk (`getRaw`: value / tombstone / ABSENT in a single pass —
+  `MutableMap.get` was paying two identical spilled walks per dedupe hit), empty buffers
+  answer before any hashing (read-only connections pay two size checks, not an FNV pass), a
+  duplicate re-add at the capacity boundary no longer forces a spurious grow-or-convert, an
+  overwrite now reclaims the whole prior entry's tail accounting, conversion logs a
+  `System.Logger` warning with the budget arithmetic, and `cleanup()` keeps failed-to-delete
+  run files tracked and counted so the spill-disk quota gauge cannot under-count while bytes
+  sit resident.
 - **Opt-in presence index for spilled staging lookups.** `SpillableSortedBuffer` can keep an
   in-heap presence structure (`LongPresenceSet`) fed on every put and consulted before any run
   probe: an EXACT hash table (16–32 B per distinct staged key, zero false positives — measured

@@ -17,6 +17,11 @@ package com.dolthub.prolly;
 
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.util.Objects;
+import org.apache.commons.collections4.bloomfilter.EnhancedDoubleHasher;
+import org.apache.commons.collections4.bloomfilter.Hasher;
+import org.apache.commons.collections4.bloomfilter.Shape;
+import org.apache.commons.collections4.bloomfilter.SimpleBloomFilter;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -32,16 +37,24 @@ import org.jspecify.annotations.Nullable;
  * <p><b>Two tiers.</b> Tier one is an EXACT open-addressing table of the full 64-bit hashes:
  * perfect answers and exact {@link #size} telemetry, ~16–32 bytes per distinct key. When growth
  * would exceed the byte budget (heap-aware: {@code max(64 MiB, maxHeap/8)}, overridable via {@code
- * prolly.presence.max-bytes}, hard-ceilinged at 8 GiB), the stored hashes CONVERT into a <b>blocked
- * Bloom filter</b> spanning the full budget — 64-byte blocks probed with one cache miss, k=8
- * double-hashed bits per key — and adds continue into it. A Bloom "absent" is as authoritative as
- * the exact table's (bits for an added key are always set: no false absents, ever); a false
- * POSITIVE merely falls through to the real probes, so as the filter fills the cost degrades
- * smoothly along the false-positive curve instead of the old always-maybe saturation cliff. At a 1
- * GiB budget the blocked-Bloom false-positive rate is roughly 0.5–1% at 500M distinct keys and a
- * few percent at 1B — versus 100% fall-through past the old cap. Sixteen bytes of budget per
- * expected distinct key keeps a load in the exact tier; loads far beyond any budget belong on a
- * batched commit cadence, where per-batch dedup hits the committed base tree instead of spill runs.
+ * prolly.presence.max-bytes}, hard-ceilinged at 8 GiB), the stored hashes CONVERT into Bloom
+ * filters spanning the same budget, and adds continue into them. A Bloom "absent" is as
+ * authoritative as the exact table's (bits for an added key are always set: no false absents,
+ * ever); a false POSITIVE merely falls through to the real probes, so as the filters fill the cost
+ * degrades smoothly along the false-positive curve instead of an always-maybe saturation cliff.
+ * Sixteen bytes of budget per expected distinct key keeps a load in the exact tier; loads far
+ * beyond any budget belong on a batched commit cadence, where per-batch dedup hits the committed
+ * base tree instead of spill runs.
+ *
+ * <p><b>Hardened bit-mixing, not hand-rolled.</b> The Bloom tier is Apache Commons Collections'
+ * {@link SimpleBloomFilter} probed through {@link EnhancedDoubleHasher} — a vetted implementation
+ * of <i>enhanced</i> double hashing. This replaces a hand-rolled blocked filter whose block index
+ * and probe stride shared mix bits, collapsing eight probes into a per-block arithmetic progression
+ * (measured ~20% false positives where theory said ~0.5%; consumer trace {@code
+ * docs/benchmarks/ncit-runs/presence-scale-probe.txt}) — precisely the defect class the library's
+ * hasher is engineered against. Because a {@link Shape} caps one filter at {@code 2^31} bits,
+ * budgets beyond 16 MiB shard across multiple filters, each key routed by an independent hash mix:
+ * a standard partitioned Bloom filter, false-positive-neutral versus one large filter.
  *
  * <p><b>Dependencies:</b> only {@link SpillableSortedBuffer} constructs one, feeding it {@link
  * #hashBytes} of each staged key's codec bytes on {@code put} and consulting {@link #mightContain}
@@ -49,20 +62,38 @@ import org.jspecify.annotations.Nullable;
  * keeps "absent" sound end to end.
  *
  * @implNote Exact tier: linear-probe open addressing over a power-of-two {@code long[]}, resized at
- *     half load; {@code 0} marks an empty slot with a genuine zero tracked by a side flag. Bloom
- *     tier: {@code long[]} bit array in 8-long (512-bit) blocks; the hash's low bits pick the
- *     block, and eight probe positions derive by double hashing within it. Conversion is a single
- *     pass over the stored hashes (they are already the material the Bloom needs); transient memory
- *     during conversion is the old table plus the new bits, both inside 1.5× the budget. Not
- *     thread-safe, exactly like the buffer that owns it.
+ *     half load; {@code 0} marks an empty slot with a genuine zero tracked by a side flag.
+ *     Conversion is a single pass over the stored hashes (they are already the material the Bloom
+ *     needs); transient memory during conversion is the old table plus the new filters — {@code
+ *     2.0×} the budget at that instant (with the default budget of {@code maxHeap/8}, a {@code
+ *     maxHeap/4} transient peak), settling back to {@code 1.0×}. Not thread-safe, exactly like the
+ *     buffer that owns it.
  */
 final class LongPresenceSet {
 
+    private static final System.Logger LOG = System.getLogger(LongPresenceSet.class.getName());
+
     private static final int INITIAL_CAPACITY = 1 << 10;
     private static final long MAX_BYTES_CEILING = 8L << 30;
+
+    /** Probes per key in the Bloom tier — the measured-good k for the budget-sized filters. */
     private static final int BLOOM_PROBES = 8;
 
-    private static long defaultMaxBytes() {
+    /** One filter's bit-count cap: {@link Shape} bits are {@code int}-indexed. 16 MiB of bits. */
+    private static final int MAX_BITS_PER_SHARD = 1 << 27;
+
+    /** Independent mix constants: probe entropy and shard routing must not share bits. */
+    private static final long GOLDEN = 0x9e3779b97f4a7c15L;
+
+    private static final long SHARD_SALT = 0x5851f42d4c957f2dL;
+
+    /**
+     * Resolved once: {@code Long.getLong} is a synchronized system-property read, and a
+     * per-transaction constructor (one per dictionary buffer) should not repay it every commit.
+     */
+    private static final long DEFAULT_MAX_BYTES = computeDefaultMaxBytes();
+
+    private static long computeDefaultMaxBytes() {
         Long override = Long.getLong("prolly.presence.max-bytes");
         if (override != null && override > 0) {
             return Math.min(override, MAX_BYTES_CEILING);
@@ -72,6 +103,11 @@ final class LongPresenceSet {
                 MAX_BYTES_CEILING);
     }
 
+    /** The heap-aware presence byte budget (shared by the per-run filter budget in the buffer). */
+    static long defaultBudgetBytes() {
+        return DEFAULT_MAX_BYTES;
+    }
+
     /** Largest exact-table slot count the byte budget allows (power of two). */
     private final int maxSlots;
 
@@ -79,13 +115,13 @@ final class LongPresenceSet {
     private int size;
     private boolean containsZero;
 
-    /** Non-null once converted; sized to the full byte budget, in 8-long blocks. */
-    private long @Nullable [] bloom;
+    /** Non-null once converted; together the shards span the full byte budget. */
+    private SimpleBloomFilter @Nullable [] shards;
 
-    private int bloomBlockCount;
+    private int shardCount;
 
     LongPresenceSet() {
-        this(defaultMaxBytes());
+        this(DEFAULT_MAX_BYTES);
     }
 
     /** Explicit-budget constructor (also the test seam): {@code maxBytes} bounds both tiers. */
@@ -96,7 +132,7 @@ final class LongPresenceSet {
 
     /** Registers {@code h}. Idempotent; {@code 0} is an ordinary value. */
     void add(long h) {
-        long[] b = bloom;
+        SimpleBloomFilter[] b = shards;
         if (b != null) {
             bloomAdd(b, h);
             return;
@@ -109,9 +145,16 @@ final class LongPresenceSet {
             return;
         }
         if ((size + 1) * 2 > slots.length) {
+            // A duplicate re-add at the capacity boundary must not force a
+            // spurious doubling — or, at the budget, an irreversible Bloom
+            // conversion — when no new distinct key needs a slot. Probe first;
+            // the extra probe is paid only at boundary crossings.
+            if (exactContains(h)) {
+                return;
+            }
             if (slots.length >= maxSlots) {
                 convertToBloom(); // the budget holds; the answers get probabilistic, never wrong
-                bloomAdd(bloom, h);
+                bloomAdd(Objects.requireNonNull(shards), h);
                 return;
             }
             grow();
@@ -123,26 +166,14 @@ final class LongPresenceSet {
 
     /** True if {@code h} MAY have been {@link #add}ed since the last {@link #clear}. */
     boolean mightContain(long h) {
-        long[] b = bloom;
+        SimpleBloomFilter[] b = shards;
         if (b != null) {
-            return bloomMightContain(b, h);
+            return b[shardFor(h)].contains(hasherFor(h));
         }
         if (h == 0) {
             return containsZero;
         }
-        long[] s = slots;
-        int mask = s.length - 1;
-        int i = (int) spread(h) & mask;
-        while (true) {
-            long v = s[i];
-            if (v == h) {
-                return true;
-            }
-            if (v == 0) {
-                return false;
-            }
-            i = (i + 1) & mask;
-        }
+        return exactContains(h);
     }
 
     /** Empties the set back to the exact tier; the instance stays usable (buffer clear-reuse). */
@@ -152,8 +183,8 @@ final class LongPresenceSet {
         slots = new long[INITIAL_CAPACITY];
         size = 0;
         containsZero = false;
-        bloom = null;
-        bloomBlockCount = 0;
+        shards = null;
+        shardCount = 0;
     }
 
     /**
@@ -167,7 +198,12 @@ final class LongPresenceSet {
 
     /** True once the budget forced conversion to the Bloom tier — a test observable. */
     boolean isBloomForTest() {
-        return bloom != null;
+        return shards != null;
+    }
+
+    /** Number of Bloom shards after conversion, {@code 0} while exact — a test observable. */
+    int shardCountForTest() {
+        return shardCount;
     }
 
     /**
@@ -185,20 +221,34 @@ final class LongPresenceSet {
         return h;
     }
 
+    /**
+     * The one probe derivation for every Bloom filter this class and {@link SpillableSortedBuffer}
+     * build from a key hash: two independent finalizer mixes feeding the library's enhanced double
+     * hashing. Shared so a per-run filter and the presence shards can never disagree on a key's
+     * probe positions.
+     */
+    static Hasher hasherFor(long h) {
+        long m1 = spread(h);
+        return new EnhancedDoubleHasher(m1, spread(m1 + GOLDEN));
+    }
+
     // ----- bloom tier -----
 
     /**
-     * Allocate the budget-sized blocked Bloom and pour the exact tier into it: the stored values
-     * ARE the 64-bit hashes the Bloom consumes, so conversion is one linear pass and loses nothing
-     * in the hash domain.
+     * Allocate the budget's worth of Bloom shards and pour the exact tier into them: the stored
+     * values ARE the 64-bit hashes the filters consume, so conversion is one linear pass and loses
+     * nothing in the hash domain. Transiently holds old table + new shards = 2.0× the budget.
      */
     private void convertToBloom() {
-        // The full budget in bits, in 8-long (64-byte, one cache line) blocks. maxSlots is the
-        // budget in longs already (budget/8 bytes-per-long), so reuse it as the Bloom's long
-        // count: same bytes, 8x the bits, one block per 8 longs.
-        int longs = Math.max(8, maxSlots);
-        long[] b = new long[longs];
-        this.bloomBlockCount = longs / 8;
+        long budgetBits = (long) maxSlots * Long.SIZE; // same bytes as the table, 8× the bits
+        int bitsPerShard = (int) Math.min(budgetBits, MAX_BITS_PER_SHARD);
+        int count = (int) (budgetBits / bitsPerShard); // both powers of two: exact division
+        Shape shape = Shape.fromKM(BLOOM_PROBES, bitsPerShard);
+        SimpleBloomFilter[] b = new SimpleBloomFilter[count];
+        for (int i = 0; i < count; i++) {
+            b[i] = new SimpleBloomFilter(shape);
+        }
+        this.shardCount = count;
         for (long v : slots) {
             if (v != 0) {
                 bloomAdd(b, v);
@@ -207,47 +257,51 @@ final class LongPresenceSet {
         if (containsZero) {
             bloomAdd(b, 0);
         }
-        this.bloom = b; // installed only after the pour: a throw above leaves the exact tier live
+        this.shards = b; // installed only after the pour: a throw above leaves the exact tier live
         this.slots = new long[INITIAL_CAPACITY]; // the table's memory returns to the budget
+        LOG.log(
+                System.Logger.Level.WARNING,
+                "presence index exceeded its {0}-byte budget at {1} distinct keys; converted to"
+                        + " the Bloom tier ({2} shard(s), probabilistic maybes, never a false"
+                        + " absent) — for exact-tier speed budget ~16 bytes per expected distinct"
+                        + " key via -Dprolly.presence.max-bytes, or switch very large loads to a"
+                        + " batched commit cadence",
+                (long) maxSlots * Long.BYTES,
+                size,
+                count);
     }
 
-    private void bloomAdd(long @Nullable [] b, long h) {
-        if (b == null) {
-            return; // defensive: caller checked; NullAway-visible guard
-        }
-        long m1 = spread(h);
-        // A SECOND independent mix for the probe positions: bloomBlockCount is
-        // a power of two, so block selection consumes m1's LOW bits — deriving
-        // the probe stride from those same bits made it constant per block and
-        // collapsed the eight probes into one shared arithmetic progression
-        // (measured: ~20% false positives where theory said ~0.5%). Probes must
-        // draw entropy the block index did not.
-        long m2 = spread(m1 + 0x9e3779b97f4a7c15L);
-        int block = (int) Long.remainderUnsigned(m1, bloomBlockCount) * 8;
-        int h1 = (int) m2;
-        int h2 = (int) (m2 >>> 32) | 1; // odd step so probes cover the block
-        for (int i = 0; i < BLOOM_PROBES; i++) {
-            int bit = (h1 + i * h2) & 511; // position within the 512-bit block
-            b[block + (bit >>> 6)] |= 1L << (bit & 63);
-        }
+    private void bloomAdd(SimpleBloomFilter[] b, long h) {
+        b[shardFor(h)].merge(hasherFor(h));
     }
 
-    private boolean bloomMightContain(long[] b, long h) {
-        long m1 = spread(h);
-        long m2 = spread(m1 + 0x9e3779b97f4a7c15L);
-        int block = (int) Long.remainderUnsigned(m1, bloomBlockCount) * 8;
-        int h1 = (int) m2;
-        int h2 = (int) (m2 >>> 32) | 1;
-        for (int i = 0; i < BLOOM_PROBES; i++) {
-            int bit = (h1 + i * h2) & 511;
-            if ((b[block + (bit >>> 6)] & (1L << (bit & 63))) == 0) {
-                return false; // one clear probe bit proves the key was never added
-            }
-        }
-        return true;
+    /**
+     * Routes a key to its shard by a mix independent of {@link #hasherFor}'s, so shard choice
+     * consumes no probe entropy. Symmetric between add and query, which is all soundness needs.
+     */
+    private int shardFor(long h) {
+        return shardCount == 1
+                ? 0
+                : (int) Long.remainderUnsigned(spread(h ^ SHARD_SALT), shardCount);
     }
 
     // ----- exact tier -----
+
+    private boolean exactContains(long h) {
+        long[] s = slots;
+        int mask = s.length - 1;
+        int i = (int) spread(h) & mask;
+        while (true) {
+            long v = s[i];
+            if (v == h) {
+                return true;
+            }
+            if (v == 0) {
+                return false;
+            }
+            i = (i + 1) & mask;
+        }
+    }
 
     private void grow() {
         long[] next = new long[slots.length << 1];

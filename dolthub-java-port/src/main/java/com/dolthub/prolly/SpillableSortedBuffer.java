@@ -36,6 +36,9 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.TreeMap;
+import org.apache.commons.collections4.bloomfilter.Hasher;
+import org.apache.commons.collections4.bloomfilter.Shape;
+import org.apache.commons.collections4.bloomfilter.SimpleBloomFilter;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -48,12 +51,15 @@ import org.jspecify.annotations.Nullable;
  * transaction's pending edits. Keeps a bounded in-heap tail (a {@link TreeMap} keyed on {@code K});
  * once it exceeds a byte threshold, the sorted tail is written to a temporary on-disk <i>run</i>
  * and the heap map is cleared, so a transaction of arbitrary size costs {@code O(threshold)} heap,
- * not {@code O(edits)} — with one deliberate exception: the opt-in presence index (see the
- * five-argument constructor) holds 16–32 bytes per DISTINCT staged key for the buffer's lifetime,
- * outside the spill accounting, because trading that bounded-per-key heap for per-run file probes
- * is its entire purpose. {@link #merged()} sorted-merges every run plus the tail into a single
- * ascending stream — exactly the sorted edit stream {@code TreeMutator.applyMutations} requires —
- * so spilling preserves the tree-build precondition for free.
+ * not {@code O(edits)} — with two deliberate exceptions held OUTSIDE the spill accounting: the
+ * opt-in presence structures (see the five-argument constructor — the two-tier presence index at
+ * 16–32 bytes per distinct staged key up to its byte budget, plus a ~1.2-byte-per-entry Bloom
+ * filter per sealed run up to the same budget), because trading that bounded heap for per-run file
+ * probes is their entire purpose; and each run's sparse index (a key + boxed offset every {@value
+ * #INDEX_STRIDE} entries, roughly 0.1% of the on-disk run bytes), the map that makes a point probe
+ * one block read instead of a scan. {@link #merged()} sorted-merges every run plus the tail into a
+ * single ascending stream — exactly the sorted edit stream {@code TreeMutator.applyMutations}
+ * requires — so spilling preserves the tree-build precondition for free.
  *
  * <p><b>Generic over the key</b> via a {@link KeyCodec}: the in-heap tail holds {@code K} directly
  * (so a caller whose {@code K} is alloc-free to compare — e.g. {@code Tuple} — pays no
@@ -156,9 +162,21 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
      */
     private long maxSpillDiskBytes = Long.getLong("prolly.spill.max-disk-bytes", 0L);
 
+    /** Per-run filter false-positive rate: a false maybe costs one redundant file probe. */
+    private static final double RUN_FILTER_FPP = 0.01;
+
     private final @Nullable LongPresenceSet presence; // opt-in absent-key index; null = off
     private final TreeMap<K, @Nullable MemorySegment> tail; // the in-heap, newest edits
     private long tailBytes;
+
+    /**
+     * Heap bytes the per-run filters hold so far, against {@link #runFilterBudgetBytes}: the same
+     * heap-aware budget family as the presence index, and the same graceful policy past it — new
+     * runs simply seal without a filter and take the full file probe.
+     */
+    private long runFilterBytes;
+
+    private long runFilterBudgetBytes = LongPresenceSet.defaultBudgetBytes();
     private final List<Run> runs = new ArrayList<>(); // oldest first; index = recency rank
     private final List<RunFile> runFiles =
             new ArrayList<>(); // referenced by the Cleaner (NOT this buffer)
@@ -199,17 +217,23 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
      * quadratic wall of a bulk load's dictionary dedup (distinct keys grow with the transaction; so
      * does the run count).
      *
+     * <p>Enabling it also gives every sealed run a per-run Bloom filter (built at spill time from
+     * exactly that run's keys), so a PRESENT-key lookup probes ~one run's file instead of walking
+     * all of them — the hit-side complement to the index's absent-side short-circuit.
+     *
      * @apiNote <b>Contract:</b> enable only when {@code keyComparator} equality implies {@code
      *     codec.toBytes} byte-equality (canonical, fixed-width key encodings — the dictionary's
-     *     single-column Int64 tuples are the intended user). The index under-approximates
+     *     single-column Int64 tuples are the intended user). The structures under-approximate
      *     <i>presence</i> never <i>absence</i>: a hash collision merely falls through to the
      *     ordinary probes, but a comparator-equal-yet-byte-different key pair would make "absent"
-     *     WRONG, which is why this is a constructor opt-in and not a default. Memory is 16–32 bytes
-     *     per distinct staged key (a power-of-two {@code long[]} kept at ≤50% load, plus a
-     *     transient old+new copy during a table doubling), held for the buffer's lifetime and
-     *     OUTSIDE the spill accounting — precisely the trade that replaces keeping a whole
-     *     dictionary in heap; past {@code 2^30} slots the set saturates to always-maybe instead of
-     *     growing. Reset by {@link #clear()} with everything else.
+     *     WRONG, which is why this is a constructor opt-in and not a default. Memory, held for the
+     *     buffer's lifetime and OUTSIDE the spill accounting (the trade that replaces keeping a
+     *     whole dictionary in heap): the two-tier presence index at 16–32 bytes per distinct staged
+     *     key up to a heap-aware byte budget ({@code max(64 MiB, maxHeap/8)}, {@code
+     *     prolly.presence.max-bytes}), converting past it to budget-sized Bloom filters
+     *     (probabilistic maybes, never a false absent — see {@link LongPresenceSet}); plus ~1.2
+     *     bytes per spilled entry of per-run filters up to the same budget, past which new runs
+     *     seal filterless. Reset by {@link #clear()} with everything else.
      */
     public SpillableSortedBuffer(
             Comparator<K> keyComparator,
@@ -228,18 +252,26 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
     private static Runnable cleanup(List<RunFile> files) {
         return () -> {
             synchronized (files) {
-                for (RunFile rf : files) {
+                Iterator<RunFile> it = files.iterator();
+                while (it.hasNext()) {
+                    RunFile rf = it.next();
                     try {
                         Files.deleteIfExists(rf.path);
-                    } catch (IOException ignored) {
+                    } catch (IOException deleteFailed) {
+                        // The file is still on disk (permissions flipped, an
+                        // external handle on Windows): keep it TRACKED and its
+                        // bytes COUNTED, so the spill-disk quota gauge stays
+                        // honest and the next cleanup/Cleaner firing retries.
+                        // Decrementing here would under-count the gauge while
+                        // the bytes sit resident — the quota's one blind spot.
+                        continue;
                     }
                     if (rf.bytes != 0) {
                         SPILL_DISK_BYTES.add(-rf.bytes);
-                        rf.bytes = 0; // idempotent: clear() then a later Cleaner firing decrements
-                        // nothing
+                        rf.bytes = 0; // idempotent: a later Cleaner firing decrements nothing
                     }
+                    it.remove();
                 }
-                files.clear();
             }
         };
     }
@@ -261,40 +293,76 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
         if (presence != null) presence.add(LongPresenceSet.hashBytes(keyBytes));
         MemorySegment prev = tail.put(key, value);
         tailBytes += keyBytes.byteSize() + (value == null ? 0 : value.byteSize()) + 48;
-        if (prev != null) tailBytes -= prev.byteSize();
+        // An overwrite reclaims the WHOLE prior entry's accounting (key + overhead
+        // + value), not just the value: the entry count didn't change. A prior
+        // tombstone (put returns null, indistinguishable from a fresh insert)
+        // stays conservatively over-counted — the error spills early, never late.
+        if (prev != null) tailBytes -= keyBytes.byteSize() + prev.byteSize() + 48;
         if (tailBytes >= spillThresholdBytes && tail.size() > 1) spill();
     }
 
+    /**
+     * The {@link #getRaw} "no entry anywhere" sentinel — distinct from {@code null}, which is a
+     * present tombstone. Package-private so {@code MutableMap} can do its present/tombstone/absent
+     * three-way off ONE buffer walk.
+     */
+    static final Object ABSENT = new Object();
+
     /** True if the buffer holds any entry for {@code key} (an insert <i>or</i> a tombstone). */
     public boolean containsKey(K key) {
-        // Before even the tail: every staged key (tail or run) was put, and
-        // every put registered — an index miss is an authoritative absent
-        // under the constructor's canonical-keys contract.
-        if (presence != null
-                && !presence.mightContain(LongPresenceSet.hashBytes(codec.toBytes(key))))
-            return false;
-        if (tail.containsKey(key)) return true;
-        for (int i = runs.size() - 1; i >= 0; i--) {
-            if (runs.get(i).lookup(key) != null)
-                return true; // present-as-tombstone still "contains"
-        }
-        return false;
+        return getRaw(key) != ABSENT;
     }
 
     /**
      * The newest value for {@code key}, or {@code null} if absent <i>or</i> tombstoned (mirror
-     * {@code TreeMap}: check {@link #containsKey} to distinguish).
+     * {@code TreeMap}: check {@link #containsKey} to distinguish — or use {@link #getRaw} to learn
+     * both in one walk).
      */
     public @Nullable MemorySegment get(K key) {
-        if (presence != null
-                && !presence.mightContain(LongPresenceSet.hashBytes(codec.toBytes(key))))
-            return null;
-        if (tail.containsKey(key)) return tail.get(key);
+        Object r = getRaw(key);
+        return r == ABSENT ? null : (MemorySegment) r;
+    }
+
+    /**
+     * The single-walk three-way point lookup: the newest value for {@code key}, {@code null} for a
+     * tombstone, or {@link #ABSENT} for no entry at all. {@link #containsKey} and {@link #get} are
+     * views over this — callers needing both answers (the dedup hot path) call this ONCE instead of
+     * paying two identical spilled-run walks, the measured 2× file-I/O tax on every dedupe hit.
+     */
+    @Nullable Object getRaw(K key) {
+        // An empty buffer answers before any hashing: read-only transactions
+        // (fresh forked read connections, diff/merge resolvers) never put, so
+        // their every probe lands here at the cost of two size checks.
+        if (tail.isEmpty() && runs.isEmpty()) return ABSENT;
+        long h = 0;
+        Hasher hasher = null;
+        if (presence != null) {
+            // Before even the tail: every staged key (tail or run) was put, and
+            // every put registered — an index miss is an authoritative absent
+            // under the constructor's canonical-keys contract.
+            h = LongPresenceSet.hashBytes(codec.toBytes(key));
+            if (!presence.mightContain(h)) return ABSENT;
+        }
+        MemorySegment v = tail.get(key);
+        if (v != null || tail.containsKey(key)) return v; // second descent only on null/miss
         for (int i = runs.size() - 1; i >= 0; i--) {
-            Lookup lk = runs.get(i).lookup(key);
+            Run r = runs.get(i);
+            if (r.filter != null) {
+                // Per-run filter (built from exactly this run's keys at seal
+                // time): a reject PROVES the key is not in this run — skip the
+                // file probe. This is what turns a dedupe HIT from O(runs)
+                // file opens into ~one, and mops up the presence tier's false
+                // positives on the absent side.
+                if (hasher == null) {
+                    if (presence == null) h = LongPresenceSet.hashBytes(codec.toBytes(key));
+                    hasher = LongPresenceSet.hasherFor(h);
+                }
+                if (!r.filter.contains(hasher)) continue;
+            }
+            Lookup lk = r.lookup(key);
             if (lk != null) return lk.value; // newest run that has the key wins
         }
-        return null;
+        return ABSENT;
     }
 
     public boolean isEmpty() {
@@ -345,13 +413,36 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
         return runs.isEmpty() ? -1 : runs.get(0).idxKeys.size();
     }
 
-    /** Distinct keys the presence index holds, or {@code -1} when the index is off. */
+    /**
+     * Distinct keys the presence index holds, or {@code -1} when the index is off. After the index
+     * converts to its Bloom tier the count FREEZES at the conversion point (see {@link
+     * LongPresenceSet#size()}) — exact-count assertions are valid only while the exact tier holds.
+     */
     int presenceSizeForTest() {
         return presence == null ? -1 : presence.size();
     }
 
+    /** Number of sealed runs carrying a per-run filter (test observable). */
+    int runFilterCountForTest() {
+        int c = 0;
+        for (Run r : runs) if (r.filter != null) c++;
+        return c;
+    }
+
+    /** Test hook: shrink the per-run filter byte budget (0 = no new run filters). */
+    void setRunFilterBudgetBytesForTest(long bytes) {
+        this.runFilterBudgetBytes = bytes;
+    }
+
     /**
      * A sorted, ascending, last-write-wins iterator over the tail + every run — the flush stream.
+     *
+     * <p><b>File-descriptor fan-out:</b> this opens one reader (one fd + a 64 KiB buffer) per run
+     * <i>simultaneously</i> for the k-way merge, so a transaction that spilled R runs needs R
+     * descriptors at flush/rebase time — thousands at hundreds-of-GB scale (R ≈ spilled bytes /
+     * spill threshold). Modern JVMs raise the soft {@code RLIMIT_NOFILE} to the hard limit at
+     * startup, but on hard-capped environments (containers, older distros, macOS) mind the limit or
+     * use a batched commit cadence, which bounds R per batch.
      */
     public CloseableEntryIterator<K> merged() {
         PriorityQueue<Cursor> pq =
@@ -382,10 +473,11 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
      * without this — a rolled-back transaction.
      */
     public void clear() {
-        cleanup(runFiles).run(); // deletes run files + empties runFiles
+        cleanup(runFiles).run(); // deletes run files (failed deletions stay tracked for retry)
         runs.clear();
         tail.clear();
         tailBytes = 0;
+        runFilterBytes = 0; // the per-run filters died with their runs
         // The buffer is documented reusable post-clear (a flush calls this);
         // stale hashes would not be WRONG for a filter, but they would poison
         // the reused transaction with false positives — reset with the rest.
@@ -419,6 +511,19 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
             }
             List<byte[]> idxKeys = new ArrayList<>();
             List<Long> idxOffsets = new ArrayList<>();
+            // Seal-time filter build: the run's key set is exact and final right
+            // now (n = tail.size()), so the filter is optimally shaped — the
+            // LSM/SSTable pattern. Tied to the presence opt-in (both are the
+            // same heap-for-file-probes trade) and to its byte budget.
+            SimpleBloomFilter filter = null;
+            if (presence != null) {
+                Shape shape = Shape.fromNP(tail.size(), RUN_FILTER_FPP);
+                long filterBytes = ((shape.getNumberOfBits() + 63L) / 64) * Long.BYTES;
+                if (runFilterBytes + filterBytes <= runFilterBudgetBytes) {
+                    filter = new SimpleBloomFilter(shape);
+                    runFilterBytes += filterBytes;
+                }
+            }
             K min = null, max = null;
             long pos = 0;
             int n = 0;
@@ -428,6 +533,11 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
                 for (var e : tail.entrySet()) {
                     byte[] k = codec.toBytes(e.getKey()).toArray(BYTE);
                     byte[] v = e.getValue() == null ? null : e.getValue().toArray(BYTE);
+                    if (filter != null) {
+                        filter.merge(
+                                LongPresenceSet.hasherFor(
+                                        LongPresenceSet.hashBytes(MemorySegment.ofArray(k))));
+                    }
                     if (n % INDEX_STRIDE == 0) {
                         idxKeys.add(k);
                         idxOffsets.add(pos);
@@ -444,7 +554,7 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
             }
             runFile.bytes = pos; // the run's on-disk size, known now the write has succeeded
             SPILL_DISK_BYTES.add(pos); // resident on disk until cleanup deletes it
-            runs.add(new Run(file, idxKeys, idxOffsets, min, max));
+            runs.add(new Run(file, idxKeys, idxOffsets, min, max, filter));
             tail.clear();
             tailBytes = 0;
         } catch (IOException ex) {
@@ -460,17 +570,28 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
         final List<Long> idxOffsets; // its byte offset in the file
         final @Nullable K min, max;
 
+        /**
+         * Per-run membership filter, built at seal time from exactly this run's keys (the run is
+         * immutable from then on — the ideal filter regime), sized by {@code Shape.fromNP} at
+         * {@value #RUN_FILTER_FPP} false-positive rate (~1.2 bytes/entry). A reject PROVES the key
+         * is not in this run. {@code null} when the presence index is off or the run-filter byte
+         * budget was exhausted — those runs take the ordinary file probe.
+         */
+        final @Nullable SimpleBloomFilter filter;
+
         Run(
                 Path file,
                 List<byte[]> idxKeys,
                 List<Long> idxOffsets,
                 @Nullable K min,
-                @Nullable K max) {
+                @Nullable K max,
+                @Nullable SimpleBloomFilter filter) {
             this.file = file;
             this.idxKeys = idxKeys;
             this.idxOffsets = idxOffsets;
             this.min = min;
             this.max = max;
+            this.filter = filter;
         }
 
         /**

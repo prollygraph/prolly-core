@@ -128,6 +128,54 @@ class LongPresenceSetTest {
         assertFalse(set.mightContain(8L), "exact again after clear");
     }
 
+    /**
+     * A budget above one shard's bit cap converts into MULTIPLE Bloom shards (a partitioned
+     * filter), and the invariant holds across all of them: every added key stays maybe, absents
+     * keep a fast no. 32 MiB budget = 2^28 bits = two 2^27-bit shards.
+     */
+    @Test
+    void multiShardConversionKeepsEveryAddedKey() {
+        LongPresenceSet set = new LongPresenceSet(32L * 1024 * 1024);
+        long n = (32L * 1024 * 1024 / 8) / 2 + 8; // adds crossing the half-load conversion point
+        for (long v = 1; v <= n; v++) {
+            set.add(v * 0x9e3779b97f4a7c15L); // well-spread distinct values
+        }
+        assertTrue(set.isBloomForTest(), "the budget forced conversion");
+        assertEquals(2, set.shardCountForTest(), "2^28 budget bits = two 2^27-bit shards");
+        for (long v = 1; v <= n; v += 997) { // sampled: NO FALSE ABSENT across shards
+            assertTrue(set.mightContain(v * 0x9e3779b97f4a7c15L));
+        }
+        int fastNo = 0;
+        for (long v = 1; v <= 2000; v++) {
+            if (!set.mightContain(v)) {
+                fastNo++;
+            }
+        }
+        assertTrue(fastNo > 0, "absents keep a fast no after conversion");
+    }
+
+    /**
+     * Re-adding an EXISTING value at the capacity boundary must not force a spurious doubling — or,
+     * at the budget ceiling, an irreversible Bloom conversion — when no new distinct key needs a
+     * slot: duplicate detection runs before the capacity decision.
+     */
+    @Test
+    void duplicateAddAtTheBoundaryDoesNotConvert() {
+        LongPresenceSet set = new LongPresenceSet(16 * 1024); // 2048-slot ceiling
+        for (long v = 1; v <= 1024; v++) {
+            set.add(v); // exactly half load of the ceiling table: the boundary
+        }
+        assertFalse(set.isBloomForTest());
+        for (long v = 1; v <= 1024; v++) {
+            set.add(v); // duplicates at the boundary: no growth pressure exists
+        }
+        assertFalse(set.isBloomForTest(), "duplicate re-adds must not trigger conversion");
+        assertEquals(1024, set.size());
+        set.add(4242); // a genuinely NEW key at the ceiling converts
+        assertTrue(set.isBloomForTest());
+        assertTrue(set.mightContain(4242));
+    }
+
     /** Zero survives the conversion pour — the sentinel value must not get lost mid-tier. */
     @Test
     void zeroSurvivesBloomConversion() {
