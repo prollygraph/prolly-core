@@ -70,7 +70,7 @@
     <!-- Code style: Google Java Format via spotless. `mvn spotless:apply` auto-formats the
          tree to Google Java Style; `mvn spotless:check` verifies. google-java-format must run
          on AND parse Java 25, so it tracks a recent version. -->
-    <spotless-maven-plugin.version>2.46.1</spotless-maven-plugin.version>
+    <spotless-maven-plugin.version>3.10.0</spotless-maven-plugin.version>
     <google-java-format.version>1.35.0</google-java-format.version>
     <pitest.version>1.20.2</pitest.version>
     <pitest-junit5.version>1.2.3</pitest-junit5.version>
