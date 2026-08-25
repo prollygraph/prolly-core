@@ -48,7 +48,10 @@ import org.jspecify.annotations.Nullable;
  * transaction's pending edits. Keeps a bounded in-heap tail (a {@link TreeMap} keyed on {@code K});
  * once it exceeds a byte threshold, the sorted tail is written to a temporary on-disk <i>run</i>
  * and the heap map is cleared, so a transaction of arbitrary size costs {@code O(threshold)} heap,
- * not {@code O(edits)}. {@link #merged()} sorted-merges every run plus the tail into a single
+ * not {@code O(edits)} — with one deliberate exception: the opt-in presence index (see the
+ * five-argument constructor) holds 16–32 bytes per DISTINCT staged key for the buffer's lifetime,
+ * outside the spill accounting, because trading that bounded-per-key heap for per-run file probes
+ * is its entire purpose. {@link #merged()} sorted-merges every run plus the tail into a single
  * ascending stream — exactly the sorted edit stream {@code TreeMutator.applyMutations} requires —
  * so spilling preserves the tree-build precondition for free.
  *
@@ -201,9 +204,12 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
      *     single-column Int64 tuples are the intended user). The index under-approximates
      *     <i>presence</i> never <i>absence</i>: a hash collision merely falls through to the
      *     ordinary probes, but a comparator-equal-yet-byte-different key pair would make "absent"
-     *     WRONG, which is why this is a constructor opt-in and not a default. Memory is ~16 bytes
-     *     per distinct staged key for the buffer's lifetime — precisely the trade that replaces
-     *     keeping a whole dictionary in heap. Reset by {@link #clear()} with everything else.
+     *     WRONG, which is why this is a constructor opt-in and not a default. Memory is 16–32 bytes
+     *     per distinct staged key (a power-of-two {@code long[]} kept at ≤50% load, plus a
+     *     transient old+new copy during a table doubling), held for the buffer's lifetime and
+     *     OUTSIDE the spill accounting — precisely the trade that replaces keeping a whole
+     *     dictionary in heap; past {@code 2^30} slots the set saturates to always-maybe instead of
+     *     growing. Reset by {@link #clear()} with everything else.
      */
     public SpillableSortedBuffer(
             Comparator<K> keyComparator,
@@ -243,13 +249,19 @@ public final class SpillableSortedBuffer<K> implements AutoCloseable {
      * wins.
      */
     public void put(K key, @Nullable MemorySegment value) {
-        MemorySegment prev = tail.put(key, value);
         MemorySegment keyBytes = codec.toBytes(key); // one call feeds accounting AND the index
+        // The index registers BEFORE the tail insert, deliberately: add() can
+        // throw (a doubling table copy mid-grow), and a key that reached the
+        // tail without reaching the index would make later lookups answer an
+        // authoritative wrong "absent" — the one direction the filter must
+        // never err. This order's failure mode is the benign inverse: a hash
+        // registered for a key that never landed is just a false "maybe".
+        // Tombstones register too: a deleted key is CONTAINED (as a
+        // tombstone), so the index must say "maybe" for it — delete is a put.
+        if (presence != null) presence.add(LongPresenceSet.hashBytes(keyBytes));
+        MemorySegment prev = tail.put(key, value);
         tailBytes += keyBytes.byteSize() + (value == null ? 0 : value.byteSize()) + 48;
         if (prev != null) tailBytes -= prev.byteSize();
-        // Tombstones register too: a deleted key is CONTAINED (as a tombstone),
-        // so the index must say "maybe" for it, and does — delete is a put.
-        if (presence != null) presence.add(LongPresenceSet.hashBytes(keyBytes));
         if (tailBytes >= spillThresholdBytes && tail.size() > 1) spill();
     }
 

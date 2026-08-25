@@ -96,6 +96,28 @@ class LongPresenceSetTest {
         assertTrue(set.mightContain(5L));
     }
 
+    /**
+     * Saturation is the overflow-safety valve: past the max table size the set must degrade to
+     * always-maybe (sound — every probe falls through to the real lookups), never crash on a
+     * doubling that would overflow to a negative array size. The natural trigger is 2^29 distinct
+     * adds; the seam forces the state so the behavior is pinned without an 8 GiB table.
+     */
+    @Test
+    void saturationMeansAlwaysMaybeNeverACrash() {
+        LongPresenceSet set = new LongPresenceSet();
+        set.add(7L);
+        set.saturateForTest();
+        assertTrue(set.mightContain(7L));
+        assertTrue(set.mightContain(999L), "saturated answers maybe for everything");
+        assertTrue(set.mightContain(0L), "including the zero sentinel");
+        set.add(123L); // no-op, no crash
+        assertTrue(set.mightContain(123L));
+        set.clear();
+        assertFalse(set.mightContain(999L), "clear resets saturation with everything else");
+        set.add(5L);
+        assertTrue(set.mightContain(5L));
+    }
+
     @Test
     void hashBytesIsStableAndSeparatesDifferingBytes() {
         MemorySegment a = MemorySegment.ofArray("term-a".getBytes(StandardCharsets.UTF_8));

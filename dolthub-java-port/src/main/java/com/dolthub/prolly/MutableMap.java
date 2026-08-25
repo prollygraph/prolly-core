@@ -166,10 +166,11 @@ public class MutableMap {
     /**
      * Public constructor with an explicit per-instance spill threshold (temp dir defaults to {@code
      * java.io.tmpdir}). Lets one buffer be tuned independently of the global {@code
-     * prolly.tx.spill.bytes} — e.g. a bulk load keeps the <b>dictionary</b> buffer in-heap (its
-     * per-term {@code get} for dedup is {@code O(runs)} when spilled, the build-once encode wall)
-     * while the insert-only index buffers spill at the normal threshold (plans/prolly-bulk-load.md
-     * Phase 2 / an upstream bulk-load decision, D-3).
+     * prolly.tx.spill.bytes}. Historically this was the ONLY escape from the build-once encode wall
+     * (the dictionary's per-term dedup {@code get} is {@code O(runs)} once spilled —
+     * plans/prolly-bulk-load.md Phase 2, D-3), so bulk loads kept the dict buffer in-heap here;
+     * with the presence-index overloads below, a SPILLED dictionary encodes in amortized O(1) per
+     * term too, and this threshold demotes to an ordinary heap-vs-disk tuning knob.
      */
     public MutableMap(
             StaticMap base,

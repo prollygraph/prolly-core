@@ -43,12 +43,26 @@ final class LongPresenceSet {
 
     private static final int INITIAL_CAPACITY = 1 << 10;
 
+    /**
+     * The largest table this set will allocate ({@code 1 << 30} slots, 8 GiB). Past it the set
+     * SATURATES — {@link #mightContain} answers {@code true} for everything — rather than crash:
+     * {@code slots.length << 1} would overflow to a negative array size at the next doubling, and
+     * an always-maybe filter is sound by construction (every probe falls through to the real
+     * lookups), while a {@code NegativeArraySizeException} half a billion keys into a bulk load is
+     * not.
+     */
+    private static final int MAX_CAPACITY = 1 << 30;
+
     private long[] slots = new long[INITIAL_CAPACITY];
     private int size;
     private boolean containsZero;
+    private boolean saturated;
 
     /** Registers {@code h}. Idempotent; {@code 0} is an ordinary value. */
     void add(long h) {
+        if (saturated) {
+            return; // every mightContain already answers true
+        }
         if (h == 0) {
             if (!containsZero) {
                 containsZero = true;
@@ -57,6 +71,10 @@ final class LongPresenceSet {
             return;
         }
         if ((size + 1) * 2 > slots.length) {
+            if (slots.length >= MAX_CAPACITY) {
+                saturated = true; // degrade to always-maybe, never to a crash
+                return;
+            }
             grow();
         }
         if (insert(slots, h)) {
@@ -66,6 +84,9 @@ final class LongPresenceSet {
 
     /** True if {@code h} was ever {@link #add}ed since the last {@link #clear}. */
     boolean mightContain(long h) {
+        if (saturated) {
+            return true;
+        }
         if (h == 0) {
             return containsZero;
         }
@@ -91,11 +112,21 @@ final class LongPresenceSet {
         slots = new long[INITIAL_CAPACITY];
         size = 0;
         containsZero = false;
+        saturated = false;
     }
 
     /** Distinct values registered — a test observable, not a capacity. */
     int size() {
         return size;
+    }
+
+    /**
+     * Forces the saturated state — a test seam: the natural trigger is 2^29 distinct adds against
+     * an 8 GiB table, which no unit test can afford, while the BEHAVIOR under saturation
+     * (always-maybe, add no-op, clear resets) is exactly what must never regress.
+     */
+    void saturateForTest() {
+        saturated = true;
     }
 
     /**

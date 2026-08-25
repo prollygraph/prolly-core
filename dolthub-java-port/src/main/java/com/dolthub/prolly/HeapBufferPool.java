@@ -34,9 +34,12 @@ import java.lang.foreign.MemorySegment;
  * @implNote <b>Collaborators:</b> {@link BufferPool} (the seam; this class is deliberately the
  *     no-override implementation of it). <b>Dependents / wiring:</b> {@code
  *     upstream per-repo write pools and server defaults — the wiring sites the upstream
- *     production-primitive parity registry sync-checks. Sizes round up to the next
- *     power of two (minimum 1024) to match {@code DirectBufferPool}'s bucket layout, so callers see
- *     consistent segment sizes regardless of which pool is wired.
+ *     production-primitive parity registry sync-checks. {@link #borrow} sizes round up to the
+ *     next power of two (minimum 1024) to match {@code DirectBufferPool}'s bucket layout, so
+ *     SCRATCH borrows see consistent segment sizes regardless of which pool is wired; {@link
+ *     #borrowRetained} deliberately breaks that symmetry — exact-size here, bucket-size on an
+ *     arena pool — because a retained key is never recycled and callers slice to exact size
+ *     anyway, so only the backing allocation differs, never the observable segment.
  */
 public final class HeapBufferPool implements BufferPool, AutoCloseable {
     @Override
@@ -54,7 +57,8 @@ public final class HeapBufferPool implements BufferPool, AutoCloseable {
      * Exact-size, no floor: a retained key is never recycled (ADR-0062 D-3), so the power-of-two
      * bucket layout that {@link #borrow}'s rounding mirrors buys nothing here — it only multiplies
      * live heap for the transaction's lifetime (the 1024-byte floor turned every 42-byte staged
-     * quad key into 24× its size in the consumer's measured bulk-ingest OOM).
+     * quad key into 24× its size in the consumer's measured bulk-ingest OOM —
+     * quarkus-ontology-editor {@code docs/benchmarks/ncit-runs/e2e-one-flush.txt}, run 4).
      */
     @Override
     public MemorySegment borrowRetained(int size) {

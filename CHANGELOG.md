@@ -8,6 +8,23 @@ supported transition. Entries below are release-level; day-to-day history is the
 
 ### Engine
 
+- **Opt-in presence index for spilled staging lookups.** `SpillableSortedBuffer` can keep an
+  in-heap set of key-byte hashes (`LongPresenceSet`, 16–32 B per distinct staged key, saturating
+  to always-maybe past 2^30 slots) fed on every put and consulted before any run probe, so an
+  absent-key `get`/`containsKey` answers from one array probe instead of a file open plus up to
+  an index-stride of decodes per spilled run. Contract-gated in the constructor (comparator
+  equality must imply codec byte-equality — canonical fixed-width keys); the RDF ring's
+  dictionary is the intended and first user: its per-term dedup was measured O(runs) per first
+  encounter, the quadratic bulk-encode wall (consumer trace: quarkus-ontology-editor
+  `docs/benchmarks/ncit-runs/one-flush-probe.txt`). The existing 600-try ActionChain model
+  property runs the same chains with the index on.
+- **`BufferPool.borrowRetained` — exact-size allocation for staged keys.** A key retained in
+  `MutableMap.edits` until flush is never recycled (ADR-0062 D-3), so `HeapBufferPool`'s 1 KiB
+  bucket floor was pure live-heap amplification: 24× per 42-byte quad key across a whole
+  transaction (consumer trace: `e2e-one-flush.txt`, run 4 — an `OutOfMemoryError` at
+  `HeapBufferPool.borrow`). The default delegates to `borrow`, so arena pools keep their bucket
+  layout; the heap pool overrides to exact-size.
+
 - **Seeded seek in the tree-write path.** `Cursor.atKeyFrom` positions a fresh cursor
   chain from an existing one over the same immutable base tree, reusing already-materialised
   nodes and reading the store only below the first divergence; `TreeMutator.Chunker.advanceTo`
