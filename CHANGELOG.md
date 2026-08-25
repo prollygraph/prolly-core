@@ -9,8 +9,13 @@ supported transition. Entries below are release-level; day-to-day history is the
 ### Engine
 
 - **Opt-in presence index for spilled staging lookups.** `SpillableSortedBuffer` can keep an
-  in-heap set of key-byte hashes (`LongPresenceSet`, 16–32 B per distinct staged key, saturating
-  to always-maybe past 2^30 slots) fed on every put and consulted before any run probe, so an
+  in-heap presence structure (`LongPresenceSet`) fed on every put and consulted before any run
+  probe: an EXACT hash table (16–32 B per distinct staged key, zero false positives — measured
+  196 ns per absent lookup) under a heap-aware byte budget (`max(64 MiB, maxHeap/8)`,
+  `prolly.presence.max-bytes` override), CONVERTING to a budget-sized blocked Bloom filter past
+  it — no false absents ever, and the cost past budget follows the false-positive curve
+  (measured 16.5 µs blended at 36M keys beyond a 64 MB budget against 35 spilled runs, ~0.45%
+  FP) instead of a saturation cliff. The index can never itself OOM. So an
   absent-key `get`/`containsKey` answers from one array probe instead of a file open plus up to
   an index-stride of decodes per spilled run. Contract-gated in the constructor (comparator
   equality must imply codec byte-equality — canonical fixed-width keys); the RDF ring's

@@ -97,25 +97,47 @@ class LongPresenceSetTest {
     }
 
     /**
-     * Saturation is the overflow-safety valve: past the max table size the set must degrade to
-     * always-maybe (sound — every probe falls through to the real lookups), never crash on a
-     * doubling that would overflow to a negative array size. The natural trigger is 2^29 distinct
-     * adds; the seam forces the state so the behavior is pinned without an 8 GiB table.
+     * The budget tier-change: past the byte budget the exact table CONVERTS to a blocked Bloom
+     * filter spanning the same budget — never a crash, never an OOM, and above all never a false
+     * absent: every added key keeps answering maybe. Absent keys keep a real chance of a fast "no"
+     * (the graceful curve that replaced the always-maybe saturation cliff).
      */
     @Test
-    void saturationMeansAlwaysMaybeNeverACrash() {
-        LongPresenceSet set = new LongPresenceSet();
-        set.add(7L);
-        set.saturateForTest();
-        assertTrue(set.mightContain(7L));
-        assertTrue(set.mightContain(999L), "saturated answers maybe for everything");
-        assertTrue(set.mightContain(0L), "including the zero sentinel");
-        set.add(123L); // no-op, no crash
-        assertTrue(set.mightContain(123L));
+    void conversionToBloomKeepsEveryAddedKeyMaybeAndSomeAbsentsFast() {
+        LongPresenceSet set = new LongPresenceSet(16 * 1024); // 2048-slot budget: converts at 1024
+        assertFalse(set.isBloomForTest());
+        for (long v = 1; v <= 5000; v++) {
+            set.add(v);
+        }
+        assertTrue(set.isBloomForTest(), "the budget forced the Bloom tier");
+        for (long v = 1; v <= 5000; v++) {
+            assertTrue(set.mightContain(v), "NO FALSE ABSENT, ever — added key " + v);
+        }
+        int fastNo = 0;
+        for (long v = 1_000_000; v < 1_002_000; v++) {
+            if (!set.mightContain(v)) {
+                fastNo++;
+            }
+        }
+        assertTrue(fastNo > 0, "a Bloom is not always-maybe: some absents answer fast");
+        assertTrue(set.size() <= 5000, "size freezes at the conversion point");
         set.clear();
-        assertFalse(set.mightContain(999L), "clear resets saturation with everything else");
-        set.add(5L);
-        assertTrue(set.mightContain(5L));
+        assertFalse(set.isBloomForTest(), "clear returns to the exact tier");
+        set.add(7L);
+        assertTrue(set.mightContain(7L));
+        assertFalse(set.mightContain(8L), "exact again after clear");
+    }
+
+    /** Zero survives the conversion pour — the sentinel value must not get lost mid-tier. */
+    @Test
+    void zeroSurvivesBloomConversion() {
+        LongPresenceSet set = new LongPresenceSet(16 * 1024);
+        set.add(0L);
+        for (long v = 1; v <= 3000; v++) {
+            set.add(v);
+        }
+        assertTrue(set.isBloomForTest());
+        assertTrue(set.mightContain(0L), "zero was added pre-conversion and must stay maybe");
     }
 
     @Test

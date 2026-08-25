@@ -17,51 +17,89 @@ package com.dolthub.prolly;
 
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import org.jspecify.annotations.Nullable;
 
 /**
- * A minimal open-addressing set of {@code long} hashes — the in-heap presence index behind {@link
- * SpillableSortedBuffer}'s opt-in absent-key short-circuit.
+ * A two-tier presence structure over {@code long} hashes — the in-heap absent-key index behind
+ * {@link SpillableSortedBuffer}'s opt-in short-circuit.
  *
  * <p><b>Why:</b> once a buffer has spilled, every point lookup of an ABSENT key walks every run
- * file (a file open plus up to an index-stride of entry decodes per run — {@code
- * SpillableSortedBuffer.Run#lookup}). A bulk load whose distinct-key count grows with the
- * transaction pays that walk per first encounter, which is the measured quadratic dictionary-encode
- * wall. Sixteen-ish bytes per distinct key here converts those walks into one array probe.
+ * file (a file open plus up to an index-stride of entry decodes per run — measured at 3.6 ms per
+ * lookup against just 35 runs, versus 196 ns through this index; consumer probe,
+ * quarkus-ontology-editor benchmarks). A bulk load whose distinct-key count grows with the
+ * transaction pays that walk per first encounter — the measured quadratic dictionary-encode wall.
+ *
+ * <p><b>Two tiers.</b> Tier one is an EXACT open-addressing table of the full 64-bit hashes:
+ * perfect answers and exact {@link #size} telemetry, ~16–32 bytes per distinct key. When growth
+ * would exceed the byte budget (heap-aware: {@code max(64 MiB, maxHeap/8)}, overridable via {@code
+ * prolly.presence.max-bytes}, hard-ceilinged at 8 GiB), the stored hashes CONVERT into a <b>blocked
+ * Bloom filter</b> spanning the full budget — 64-byte blocks probed with one cache miss, k=8
+ * double-hashed bits per key — and adds continue into it. A Bloom "absent" is as authoritative as
+ * the exact table's (bits for an added key are always set: no false absents, ever); a false
+ * POSITIVE merely falls through to the real probes, so as the filter fills the cost degrades
+ * smoothly along the false-positive curve instead of the old always-maybe saturation cliff. At a 1
+ * GiB budget the blocked-Bloom false-positive rate is roughly 0.5–1% at 500M distinct keys and a
+ * few percent at 1B — versus 100% fall-through past the old cap. Sixteen bytes of budget per
+ * expected distinct key keeps a load in the exact tier; loads far beyond any budget belong on a
+ * batched commit cadence, where per-batch dedup hits the committed base tree instead of spill runs.
  *
  * <p><b>Dependencies:</b> only {@link SpillableSortedBuffer} constructs one, feeding it {@link
  * #hashBytes} of each staged key's codec bytes on {@code put} and consulting {@link #mightContain}
- * before any run probe. A positive answer may be a hash collision (the caller falls through to the
- * real probes — never wrong, merely slower); a negative answer is authoritative BECAUSE every
- * {@code put} registers, so the caller's contract (comparator equality implies byte equality) is
- * what keeps "absent" sound.
+ * before any run probe. The caller's contract (comparator equality implies byte equality) is what
+ * keeps "absent" sound end to end.
  *
- * @implNote Linear-probe open addressing over a power-of-two {@code long[]}, resized at half load.
- *     {@code 0} marks an empty slot; a genuine zero value is tracked by a side flag so no key can
- *     be silently unstorable. Not thread-safe, exactly like the buffer that owns it.
+ * @implNote Exact tier: linear-probe open addressing over a power-of-two {@code long[]}, resized at
+ *     half load; {@code 0} marks an empty slot with a genuine zero tracked by a side flag. Bloom
+ *     tier: {@code long[]} bit array in 8-long (512-bit) blocks; the hash's low bits pick the
+ *     block, and eight probe positions derive by double hashing within it. Conversion is a single
+ *     pass over the stored hashes (they are already the material the Bloom needs); transient memory
+ *     during conversion is the old table plus the new bits, both inside 1.5× the budget. Not
+ *     thread-safe, exactly like the buffer that owns it.
  */
 final class LongPresenceSet {
 
     private static final int INITIAL_CAPACITY = 1 << 10;
+    private static final long MAX_BYTES_CEILING = 8L << 30;
+    private static final int BLOOM_PROBES = 8;
 
-    /**
-     * The largest table this set will allocate ({@code 1 << 30} slots, 8 GiB). Past it the set
-     * SATURATES — {@link #mightContain} answers {@code true} for everything — rather than crash:
-     * {@code slots.length << 1} would overflow to a negative array size at the next doubling, and
-     * an always-maybe filter is sound by construction (every probe falls through to the real
-     * lookups), while a {@code NegativeArraySizeException} half a billion keys into a bulk load is
-     * not.
-     */
-    private static final int MAX_CAPACITY = 1 << 30;
+    private static long defaultMaxBytes() {
+        Long override = Long.getLong("prolly.presence.max-bytes");
+        if (override != null && override > 0) {
+            return Math.min(override, MAX_BYTES_CEILING);
+        }
+        return Math.min(
+                Math.max(64L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 8),
+                MAX_BYTES_CEILING);
+    }
+
+    /** Largest exact-table slot count the byte budget allows (power of two). */
+    private final int maxSlots;
 
     private long[] slots = new long[INITIAL_CAPACITY];
     private int size;
     private boolean containsZero;
-    private boolean saturated;
+
+    /** Non-null once converted; sized to the full byte budget, in 8-long blocks. */
+    private long @Nullable [] bloom;
+
+    private int bloomBlockCount;
+
+    LongPresenceSet() {
+        this(defaultMaxBytes());
+    }
+
+    /** Explicit-budget constructor (also the test seam): {@code maxBytes} bounds both tiers. */
+    LongPresenceSet(long maxBytes) {
+        long budgetSlots = Math.max(INITIAL_CAPACITY, maxBytes / Long.BYTES);
+        this.maxSlots = Integer.highestOneBit((int) Math.min(budgetSlots, 1L << 30));
+    }
 
     /** Registers {@code h}. Idempotent; {@code 0} is an ordinary value. */
     void add(long h) {
-        if (saturated) {
-            return; // every mightContain already answers true
+        long[] b = bloom;
+        if (b != null) {
+            bloomAdd(b, h);
+            return;
         }
         if (h == 0) {
             if (!containsZero) {
@@ -71,8 +109,9 @@ final class LongPresenceSet {
             return;
         }
         if ((size + 1) * 2 > slots.length) {
-            if (slots.length >= MAX_CAPACITY) {
-                saturated = true; // degrade to always-maybe, never to a crash
+            if (slots.length >= maxSlots) {
+                convertToBloom(); // the budget holds; the answers get probabilistic, never wrong
+                bloomAdd(bloom, h);
                 return;
             }
             grow();
@@ -82,10 +121,11 @@ final class LongPresenceSet {
         }
     }
 
-    /** True if {@code h} was ever {@link #add}ed since the last {@link #clear}. */
+    /** True if {@code h} MAY have been {@link #add}ed since the last {@link #clear}. */
     boolean mightContain(long h) {
-        if (saturated) {
-            return true;
+        long[] b = bloom;
+        if (b != null) {
+            return bloomMightContain(b, h);
         }
         if (h == 0) {
             return containsZero;
@@ -105,28 +145,29 @@ final class LongPresenceSet {
         }
     }
 
-    /** Empties the set; the instance stays usable (mirrors the owning buffer's clear-reuse). */
+    /** Empties the set back to the exact tier; the instance stays usable (buffer clear-reuse). */
     void clear() {
         // A fresh small array rather than Arrays.fill: a transaction that
         // staged millions of keys should not pin the grown table across reuse.
         slots = new long[INITIAL_CAPACITY];
         size = 0;
         containsZero = false;
-        saturated = false;
+        bloom = null;
+        bloomBlockCount = 0;
     }
 
-    /** Distinct values registered — a test observable, not a capacity. */
+    /**
+     * Distinct values registered while in the exact tier; after Bloom conversion the count FREEZES
+     * at the conversion point (a Bloom cannot distinguish new from duplicate) — a test observable
+     * and telemetry hint, not a capacity.
+     */
     int size() {
         return size;
     }
 
-    /**
-     * Forces the saturated state — a test seam: the natural trigger is 2^29 distinct adds against
-     * an 8 GiB table, which no unit test can afford, while the BEHAVIOR under saturation
-     * (always-maybe, add no-op, clear resets) is exactly what must never regress.
-     */
-    void saturateForTest() {
-        saturated = true;
+    /** True once the budget forced conversion to the Bloom tier — a test observable. */
+    boolean isBloomForTest() {
+        return bloom != null;
     }
 
     /**
@@ -143,6 +184,70 @@ final class LongPresenceSet {
         }
         return h;
     }
+
+    // ----- bloom tier -----
+
+    /**
+     * Allocate the budget-sized blocked Bloom and pour the exact tier into it: the stored values
+     * ARE the 64-bit hashes the Bloom consumes, so conversion is one linear pass and loses nothing
+     * in the hash domain.
+     */
+    private void convertToBloom() {
+        // The full budget in bits, in 8-long (64-byte, one cache line) blocks. maxSlots is the
+        // budget in longs already (budget/8 bytes-per-long), so reuse it as the Bloom's long
+        // count: same bytes, 8x the bits, one block per 8 longs.
+        int longs = Math.max(8, maxSlots);
+        long[] b = new long[longs];
+        this.bloomBlockCount = longs / 8;
+        for (long v : slots) {
+            if (v != 0) {
+                bloomAdd(b, v);
+            }
+        }
+        if (containsZero) {
+            bloomAdd(b, 0);
+        }
+        this.bloom = b; // installed only after the pour: a throw above leaves the exact tier live
+        this.slots = new long[INITIAL_CAPACITY]; // the table's memory returns to the budget
+    }
+
+    private void bloomAdd(long @Nullable [] b, long h) {
+        if (b == null) {
+            return; // defensive: caller checked; NullAway-visible guard
+        }
+        long m1 = spread(h);
+        // A SECOND independent mix for the probe positions: bloomBlockCount is
+        // a power of two, so block selection consumes m1's LOW bits — deriving
+        // the probe stride from those same bits made it constant per block and
+        // collapsed the eight probes into one shared arithmetic progression
+        // (measured: ~20% false positives where theory said ~0.5%). Probes must
+        // draw entropy the block index did not.
+        long m2 = spread(m1 + 0x9e3779b97f4a7c15L);
+        int block = (int) Long.remainderUnsigned(m1, bloomBlockCount) * 8;
+        int h1 = (int) m2;
+        int h2 = (int) (m2 >>> 32) | 1; // odd step so probes cover the block
+        for (int i = 0; i < BLOOM_PROBES; i++) {
+            int bit = (h1 + i * h2) & 511; // position within the 512-bit block
+            b[block + (bit >>> 6)] |= 1L << (bit & 63);
+        }
+    }
+
+    private boolean bloomMightContain(long[] b, long h) {
+        long m1 = spread(h);
+        long m2 = spread(m1 + 0x9e3779b97f4a7c15L);
+        int block = (int) Long.remainderUnsigned(m1, bloomBlockCount) * 8;
+        int h1 = (int) m2;
+        int h2 = (int) (m2 >>> 32) | 1;
+        for (int i = 0; i < BLOOM_PROBES; i++) {
+            int bit = (h1 + i * h2) & 511;
+            if ((b[block + (bit >>> 6)] & (1L << (bit & 63))) == 0) {
+                return false; // one clear probe bit proves the key was never added
+            }
+        }
+        return true;
+    }
+
+    // ----- exact tier -----
 
     private void grow() {
         long[] next = new long[slots.length << 1];
