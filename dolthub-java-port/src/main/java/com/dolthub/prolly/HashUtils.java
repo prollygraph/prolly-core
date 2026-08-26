@@ -22,6 +22,7 @@ import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
+import java.util.HexFormat;
 
 /**
  * The one place content-address hashes are computed and rendered: {@code hash(bytes)} is the
@@ -99,16 +100,28 @@ public class HashUtils {
         return new String(out);
     }
 
-    /** Parses a lowercase hex string back into bytes. Throws on odd length. */
+    /**
+     * Parses a hex string back into bytes, STRICTLY. Throws on odd length or any character outside
+     * {@code [0-9a-fA-F]}.
+     *
+     * <p>Strictness is the point, and the previous implementation did not have it. Decoding
+     * byte-by-byte with {@code Integer.parseInt(_, 16)} inherits two behaviours nobody wants in a
+     * hash parser: it accepts a sign prefix, and it accepts any Unicode digit {@code
+     * Character.digit} recognises. So {@code "-1"} decoded to {@code 0xFF}, {@code "+f"} to {@code
+     * 0x0F}, and the Arabic-Indic digits {@code "٩٩"} to the same bytes as the ASCII {@code "99"} —
+     * two distinct strings naming one chunk, in the component whose whole premise is that the hash
+     * IS the identity. {@code SyncPackCodec} feeds this straight from a remote sync pack, so the
+     * malformed input was arriving from off-machine.
+     *
+     * <p>{@code HexFormat.parseHex} is ASCII-only and sign-free, and it also drops the per-byte
+     * {@code String} allocation the old loop paid — the same allocation {@link #toHex}'s comment
+     * above records removing from the descent path.
+     *
+     * @throws IllegalArgumentException on odd length, or {@code NumberFormatException} (a subclass)
+     *     on a non-hex character — the same types the old implementation threw for those cases.
+     */
     public static byte[] fromHex(String hex) {
-        if ((hex.length() & 1) != 0) {
-            throw new IllegalArgumentException("hex string has odd length: " + hex.length());
-        }
-        byte[] out = new byte[hex.length() / 2];
-        for (int i = 0; i < out.length; i++) {
-            out[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
-        }
-        return out;
+        return HexFormat.of().parseHex(hex);
     }
 
     /**

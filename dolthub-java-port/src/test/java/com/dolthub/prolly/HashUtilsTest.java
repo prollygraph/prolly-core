@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
@@ -177,6 +178,59 @@ class HashUtilsTest {
         // Non-hex chars produce NumberFormatException via Integer.parseInt.
         assertThrows(NumberFormatException.class, () -> HashUtils.fromHex("zz"));
         assertThrows(NumberFormatException.class, () -> HashUtils.fromHex("gh"));
+    }
+
+    /**
+     * A hex parser for a CONTENT-ADDRESSED store must be strict, and these three inputs prove the
+     * old one was not. It decoded byte-by-byte with {@code Integer.parseInt(_, 16)}, which accepts
+     * a sign prefix and any Unicode digit {@code Character.digit} recognises — so {@code "-1"}
+     * became {@code 0xFF}, {@code "+f"} became {@code 0x0F}, and the Arabic-Indic digits {@code
+     * "٩٩"} decoded to the SAME bytes as the ASCII {@code "99"}.
+     *
+     * <p>That last one is the dangerous shape: two distinct strings naming one chunk is hash
+     * aliasing, in the one component whose entire premise is that the hash IS the identity. And
+     * this is not a theoretical input — {@code SyncPackCodec} parses commit ids, meta-tree hashes
+     * and parent hashes straight out of a REMOTE sync pack, and the playground service parses
+     * HTTP-supplied hex. Malformed wire data must raise, not silently decode to something else.
+     */
+    @Test
+    void fromHex_rejects_a_sign_prefix() {
+        assertThrows(IllegalArgumentException.class, () -> HashUtils.fromHex("-1"));
+        assertThrows(IllegalArgumentException.class, () -> HashUtils.fromHex("+f"));
+    }
+
+    @Test
+    void fromHex_rejects_non_ascii_digits() {
+        assertThrows(IllegalArgumentException.class, () -> HashUtils.fromHex("\u0669\u0669"));
+    }
+
+    /**
+     * The general invariant the two tests above are instances of: {@code fromHex} is INJECTIVE, so
+     * whatever it accepts must render back to itself. Stated as a round-trip rather than a list of
+     * rejections, this catches an aliasing input nobody thought to enumerate: if {@code fromHex(s)}
+     * succeeds and {@code toHex} of the result is not {@code s} (case aside), then {@code s} and
+     * that rendering are two different strings for one chunk, which is the bug regardless of which
+     * exotic character produced it.
+     */
+    @Test
+    void every_string_fromHex_accepts_renders_back_to_itself() {
+        for (String candidate :
+                List.of("99", "-1", "+f", "\u0669\u0669", "0x99", " 99", "99 ", "\u06f9\u06f9")) {
+            byte[] decoded;
+            try {
+                decoded = HashUtils.fromHex(candidate);
+            } catch (IllegalArgumentException refused) {
+                continue; // Refusing is always a correct answer here; aliasing is not.
+            }
+            assertEquals(
+                    candidate.toLowerCase(java.util.Locale.ROOT),
+                    HashUtils.toHex(decoded),
+                    "fromHex accepted '"
+                            + candidate
+                            + "' but it renders back as '"
+                            + HashUtils.toHex(decoded)
+                            + "' \u2014 two distinct strings now name one chunk");
+        }
     }
 
     @Test
