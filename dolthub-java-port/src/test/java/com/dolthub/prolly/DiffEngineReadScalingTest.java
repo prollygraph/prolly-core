@@ -16,6 +16,7 @@
 package com.dolthub.prolly;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
@@ -38,6 +39,34 @@ import org.junit.jupiter.api.Test;
  * confound. This isolates the pure tree-diff read cost (no RDF dictionary / SPOC noise). The result
  * decides whether the (substantial, core-engine) hierarchical-hash-descent rewrite is worth doing —
  * measure before optimizing.
+ *
+ * <h2>The verdict, recorded 2026-08-26 (this instrument had never been run)</h2>
+ *
+ * <pre>
+ *   n=  2,000  levels=2  diff-reads=  16
+ *   n=  8,000  levels=2  diff-reads=  70
+ *   n= 32,000  levels=3  diff-reads= 304
+ *   16x tree  ->  19.0x reads
+ * </pre>
+ *
+ * <b>Linear. The optimization is justified</b> by this class's own criterion. (Slightly above 16x
+ * because the largest tree gains a level and pays an extra descent.)
+ *
+ * <h2>And what the obvious fix is NOT</h2>
+ *
+ * An internal-subtree skip bolted onto the existing leaf-anchored walk was tried and measured:
+ * <b>304 reads, down from 308 — about 1%</b>. Instrumenting it showed why. The skip fired 148 times
+ * at level 0 and once at level 1, because climbing above the leaf requires that leaf to be its
+ * parent's FIRST child, which is one leaf in {@code fanout}. Worse, a level-0 skip saves nothing:
+ * it still calls {@code fetchNodeFromParent}, so walking 148 leaves costs 148 reads either way.
+ *
+ * <p>That is the real shape of the cost, and it is the thing to fix: <b>every leaf is fetched only
+ * to discover that its hash matches — and that hash was already sitting in the parent, readable
+ * without touching the leaf at all.</b> So the win is not skipping from a leaf cursor; it is never
+ * descending to those leaves. The diff has to walk the PARENT cursors, compare child hashes there,
+ * and descend only where they differ. That is the rewrite the paragraph above calls substantial,
+ * and it is specified in {@code parked.md}. The attempt was reverted rather than shipped: 1% is not
+ * worth the complexity, and a half-done skip on the merge path risks silently dropping changes.
  */
 class DiffEngineReadScalingTest {
 
@@ -143,9 +172,19 @@ class DiffEngineReadScalingTest {
         System.out.printf(
                 "[diff-read-scaling] n grew %dx (%,d -> %,d); diff-reads grew %.1fx%n",
                 ns[ns.length - 1] / ns[0], ns[0], ns[ns.length - 1], ratio);
-        // No complexity assertion yet — this is the measurement that DECIDES whether the
-        // internal-subtree-skip optimization is justified. ~16x growth ⇒ O(n) leaf-walk
-        // (justified);
-        // ~flat ⇒ already O(log n) (moot). The printed ratio is the verdict.
+        // Deliberately NOT asserted flat: that is the GOAL, not the current behaviour, and a test
+        // asserting it today would just fail. Deliberately not asserted linear either — pinning
+        // linear would enshrine the defect and quietly fight the fix when it lands.
+        //
+        // What is asserted is the one thing a regression would break and the fix would not: reads
+        // must not grow WORSE than the tree. Anything super-linear means a nested walk crept in,
+        // which is the failure mode that turns a slow merge into an unusable one.
+        assertTrue(
+                ratio < ns[ns.length - 1] / (double) ns[0] * 1.5,
+                "diff reads grew "
+                        + ratio
+                        + "x for a "
+                        + (ns[ns.length - 1] / ns[0])
+                        + "x tree — worse than linear means a nested walk, not just a missing skip");
     }
 }
