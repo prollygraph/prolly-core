@@ -30,8 +30,8 @@ import org.rocksdb.WriteBufferManager;
  * one.
  *
  * <p><b>Why this exists.</b> {@link RocksNodeStore#RocksNodeStore(String)} honours five properties
- * (statistics, block-cache.mb, bloom.bits, write-buffer.mb, read-opt). {@link SharedRocksDb} built a
- * bare {@code new DBOptions()} and {@code new ColumnFamilyOptions()} and honoured none, so any
+ * (statistics, block-cache.mb, bloom.bits, write-buffer.mb, read-opt). {@link SharedRocksDb} built
+ * a bare {@code new DBOptions()} and {@code new ColumnFamilyOptions()} and honoured none, so any
  * workload moved from a standalone store onto a shared database silently lost every knob and fell
  * back to RocksDB's implicit default cache. That asymmetry was the entire stated cost of ADR-0011's
  * option E (a column family for the class index) and the reason its open question 6 could not be
@@ -42,9 +42,9 @@ import org.rocksdb.WriteBufferManager;
  * share one budget rather than reserving N. Reserving per family would understate memory by exactly
  * the family count — the shape {@code write-buffer.mb}'s memtable charging exists to prevent.
  *
- * <p><b>Ownership.</b> The native handles are owned by this object and released by {@link #close()},
- * which the opener must call after the database is closed (RocksDB's JNI bindings require handles
- * outlive the DB) or on a failed open.
+ * <p><b>Ownership.</b> The native handles are owned by this object and released by {@link
+ * #close()}, which the opener must call after the database is closed (RocksDB's JNI bindings
+ * require handles outlive the DB) or on a failed open.
  *
  * <p>Unset properties produce a tuning that applies nothing — {@link #isDefault()} is true and the
  * opener behaves byte-for-byte as it did before this class existed. That is the path every forge
@@ -52,8 +52,8 @@ import org.rocksdb.WriteBufferManager;
  *
  * @implNote {@code RocksNodeStore(String)} predates this class and still builds its own handles
  *     inline, because its constructor interleaves them with two distinct failure-cleanup paths.
- *     {@code RocksTuningParityTest} pins the two against drift; migrating that constructor is parked
- *     rather than done here, since it is not on the path of the question this unblocks.
+ *     {@code RocksTuningParityTest} pins the two against drift; migrating that constructor is
+ *     parked rather than done here, since it is not on the path of the question this unblocks.
  */
 public final class RocksTuning implements AutoCloseable {
 

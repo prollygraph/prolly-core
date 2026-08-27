@@ -76,11 +76,11 @@ public class RocksNodeStore implements NodeStore, AutoCloseable {
     /**
      * Whether this store owns the tuning handles (statistics / block cache / bloom / memtable
      * budget) and must free them, or shares them with other stores and must not.
-     * <p>
-     * False only for {@link #RocksNodeStore(String, RocksTuning)}, where a host opening one database
-     * per tenant hands every store the SAME {@link RocksTuning} so the cache budget is per-process
-     * rather than per-store. Freeing a shared cache when one store closes would yank it out from
-     * under its co-tenants.
+     *
+     * <p>False only for {@link #RocksNodeStore(String, RocksTuning)}, where a host opening one
+     * database per tenant hands every store the SAME {@link RocksTuning} so the cache budget is
+     * per-process rather than per-store. Freeing a shared cache when one store closes would yank it
+     * out from under its co-tenants.
      */
     private final boolean ownsTuning;
 
@@ -354,16 +354,16 @@ public class RocksNodeStore implements NodeStore, AutoCloseable {
     /**
      * Open a database at {@code path} whose tuning handles are <b>shared</b> with other stores.
      *
-     * <p>This is the constructor for a host that opens one database <b>per tenant</b>.
-     * {@link #RocksNodeStore(String)} builds its own block cache and frees it, so a 512 MiB budget
-     * there reserves 512 MiB of off-heap memory <i>per store</i> — unbounded in the tenant count,
-     * and the reason a measured cache-sizing win could not be switched on downstream. Handing every
-     * store the same {@link RocksTuning} makes the budget per-process instead.
+     * <p>This is the constructor for a host that opens one database <b>per tenant</b>. {@link
+     * #RocksNodeStore(String)} builds its own block cache and frees it, so a 512 MiB budget there
+     * reserves 512 MiB of off-heap memory <i>per store</i> — unbounded in the tenant count, and the
+     * reason a measured cache-sizing win could not be switched on downstream. Handing every store
+     * the same {@link RocksTuning} makes the budget per-process instead.
      *
-     * <p><b>Ownership:</b> this store owns its database and its {@code Options}, and does <b>not</b>
-     * own {@code tuning}. The caller closes the tuning, and must do so only after every store built
-     * from it is closed — RocksDB's JNI bindings require these handles to outlive the databases
-     * referencing them.
+     * <p><b>Ownership:</b> this store owns its database and its {@code Options}, and does
+     * <b>not</b> own {@code tuning}. The caller closes the tuning, and must do so only after every
+     * store built from it is closed — RocksDB's JNI bindings require these handles to outlive the
+     * databases referencing them.
      */
     public RocksNodeStore(String path, RocksTuning tuning) throws RocksDBException {
         Options options = new Options().setCreateIfMissing(true);
@@ -377,7 +377,7 @@ public class RocksNodeStore implements NodeStore, AutoCloseable {
         try {
             this.db = RocksDB.open(options, path);
         } catch (RuntimeException | RocksDBException e) {
-            options.close();   // the tuning's handles belong to the caller and stay open
+            options.close(); // the tuning's handles belong to the caller and stay open
             throw e;
         }
         this.cf = db.getDefaultColumnFamily();
@@ -400,7 +400,7 @@ public class RocksNodeStore implements NodeStore, AutoCloseable {
         this.db = db;
         this.cf = cf;
         this.ownsDb = false;
-        this.ownsTuning = false;   // shared mode: the owner configured and owns the engine
+        this.ownsTuning = false; // shared mode: the owner configured and owns the engine
         this.writeOptions = new WriteOptions();
         this.statistics =
                 null; // shared mode: the owner configures the engine, including statistics
@@ -565,10 +565,10 @@ public class RocksNodeStore implements NodeStore, AutoCloseable {
     }
 
     /**
-     * Bytes this store's block cache currently holds. Instance-level companion to
-     * {@link #aggregateBlockCacheBytes()}.
-     * <p>
-     * This is what DISCRIMINATES a shared cache from several equally-sized ones: with a shared
+     * Bytes this store's block cache currently holds. Instance-level companion to {@link
+     * #aggregateBlockCacheBytes()}.
+     *
+     * <p>This is what DISCRIMINATES a shared cache from several equally-sized ones: with a shared
      * {@link RocksTuning} every store reads the SAME underlying cache, so usage driven by one store
      * is visible from another. Capacity cannot tell them apart — three stores each with their own
      * 64 MiB cache report the same 64 MiB as three stores sharing one.

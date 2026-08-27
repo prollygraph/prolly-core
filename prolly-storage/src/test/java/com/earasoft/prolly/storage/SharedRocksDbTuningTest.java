@@ -81,30 +81,45 @@ class SharedRocksDbTuningTest {
         try (SharedRocksDb shared = SharedRocksDb.open(bare.toString(), List.of("idx"))) {
             observedDefault = cacheCapacity(shared, SharedRocksDb.CHUNK_STORE_CF);
         }
-        assertNotEquals(ASKED_MB << 20, observedDefault,
+        assertNotEquals(
+                ASKED_MB << 20,
+                observedDefault,
                 "test is vacuous: RocksDB's default already equals the size being asked for");
 
-        withProperty("prolly.rocksdb.block-cache.mb", Long.toString(ASKED_MB), () -> {
-            try (SharedRocksDb shared = SharedRocksDb.open(tuned.toString(), List.of("idx"))) {
-                assertEquals(ASKED_MB << 20, cacheCapacity(shared, SharedRocksDb.CHUNK_STORE_CF),
-                        "SharedRocksDb ignored prolly.rocksdb.block-cache.mb");
-            }
-        });
+        withProperty(
+                "prolly.rocksdb.block-cache.mb",
+                Long.toString(ASKED_MB),
+                () -> {
+                    try (SharedRocksDb shared =
+                            SharedRocksDb.open(tuned.toString(), List.of("idx"))) {
+                        assertEquals(
+                                ASKED_MB << 20,
+                                cacheCapacity(shared, SharedRocksDb.CHUNK_STORE_CF),
+                                "SharedRocksDb ignored prolly.rocksdb.block-cache.mb");
+                    }
+                });
     }
 
     @Test
     void every_column_family_shares_the_one_cache_not_a_cache_each(@TempDir Path dir)
             throws Exception {
-        withProperty("prolly.rocksdb.block-cache.mb", Long.toString(ASKED_MB), () -> {
-            try (SharedRocksDb shared = SharedRocksDb.open(dir.toString(), List.of("a", "b", "c"))) {
-                // One budget for the database, not one per family — otherwise "shared" understates
-                // memory by the number of column families.
-                for (String cf : List.of(SharedRocksDb.CHUNK_STORE_CF, "a", "b", "c")) {
-                    assertEquals(ASKED_MB << 20, cacheCapacity(shared, cf),
-                            "column family '" + cf + "' has its own cache budget");
-                }
-            }
-        });
+        withProperty(
+                "prolly.rocksdb.block-cache.mb",
+                Long.toString(ASKED_MB),
+                () -> {
+                    try (SharedRocksDb shared =
+                            SharedRocksDb.open(dir.toString(), List.of("a", "b", "c"))) {
+                        // One budget for the database, not one per family — otherwise "shared"
+                        // understates
+                        // memory by the number of column families.
+                        for (String cf : List.of(SharedRocksDb.CHUNK_STORE_CF, "a", "b", "c")) {
+                            assertEquals(
+                                    ASKED_MB << 20,
+                                    cacheCapacity(shared, cf),
+                                    "column family '" + cf + "' has its own cache budget");
+                        }
+                    }
+                });
     }
 
     @Test
@@ -113,7 +128,8 @@ class SharedRocksDbTuningTest {
         // The default path must not change for callers setting nothing — which is every forge
         // deployment today. Two independent unconfigured opens must agree, and must differ from
         // the tuned size.
-        assertNull(System.getProperty("prolly.rocksdb.block-cache.mb"),
+        assertNull(
+                System.getProperty("prolly.rocksdb.block-cache.mb"),
                 "test pollution: another test left the property set");
         long first;
         try (SharedRocksDb shared = SharedRocksDb.open(a.toString(), List.of("idx"))) {
@@ -122,7 +138,9 @@ class SharedRocksDbTuningTest {
         try (SharedRocksDb shared = SharedRocksDb.open(b.toString(), List.of("idx"))) {
             assertEquals(first, cacheCapacity(shared, SharedRocksDb.CHUNK_STORE_CF));
         }
-        assertNotEquals(ASKED_MB << 20, first,
+        assertNotEquals(
+                ASKED_MB << 20,
+                first,
                 "unconfigured open picked up the tuned size — property leaked between tests");
     }
 
@@ -131,16 +149,23 @@ class SharedRocksDbTuningTest {
         // Drift pin. RocksNodeStore(String) still builds its own handles inline (its constructor
         // interleaves them with two failure-cleanup paths), so the interpretation of the knobs now
         // lives in two places. If someone changes one, this fails.
-        withProperty("prolly.rocksdb.block-cache.mb", Long.toString(ASKED_MB), () -> {
-            try (RocksTuning tuning = RocksTuning.fromSystemProperties()) {
-                assertFalse(tuning.isDefault(), "a set property must produce a non-default tuning");
-                assertNotNull(tuning.blockCache(), "block-cache.mb must build a cache");
-            }
-            try (RocksNodeStore single = new RocksNodeStore(dir.toString())) {
-                assertEquals(ASKED_MB << 20, single.blockCacheCapacityBytes(),
-                        "RocksNodeStore and RocksTuning disagree about block-cache.mb");
-            }
-        });
+        withProperty(
+                "prolly.rocksdb.block-cache.mb",
+                Long.toString(ASKED_MB),
+                () -> {
+                    try (RocksTuning tuning = RocksTuning.fromSystemProperties()) {
+                        assertFalse(
+                                tuning.isDefault(),
+                                "a set property must produce a non-default tuning");
+                        assertNotNull(tuning.blockCache(), "block-cache.mb must build a cache");
+                    }
+                    try (RocksNodeStore single = new RocksNodeStore(dir.toString())) {
+                        assertEquals(
+                                ASKED_MB << 20,
+                                single.blockCacheCapacityBytes(),
+                                "RocksNodeStore and RocksTuning disagree about block-cache.mb");
+                    }
+                });
     }
 
     @Test
