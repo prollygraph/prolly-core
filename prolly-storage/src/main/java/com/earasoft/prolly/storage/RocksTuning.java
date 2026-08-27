@@ -124,6 +124,18 @@ public final class RocksTuning implements AutoCloseable {
         return statistics == null && tableConfig == null && writeBufferManager == null;
     }
 
+    /**
+     * The single-column-family form: {@link org.rocksdb.Options} carries what {@code DBOptions} and
+     * {@code ColumnFamilyOptions} carry separately, so this applies both halves at once. Used by
+     * {@code RocksNodeStore(String, RocksTuning)}, where several separate databases share one
+     * budget.
+     */
+    public void applyTo(org.rocksdb.Options options) {
+        if (statistics != null) options.setStatistics(statistics);
+        if (tableConfig != null) options.setTableFormatConfig(tableConfig);
+        if (writeBufferManager != null) options.setWriteBufferManager(writeBufferManager);
+    }
+
     /** Database-wide settings: statistics and the memtable budget. */
     public void applyTo(DBOptions dbOptions) {
         if (statistics != null) dbOptions.setStatistics(statistics);

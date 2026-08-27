@@ -73,6 +73,17 @@ public class RocksNodeStore implements NodeStore, AutoCloseable {
     /** True only when this store opened the DB itself and must close it. */
     private final boolean ownsDb;
 
+    /**
+     * Whether this store owns the tuning handles (statistics / block cache / bloom / memtable
+     * budget) and must free them, or shares them with other stores and must not.
+     * <p>
+     * False only for {@link #RocksNodeStore(String, RocksTuning)}, where a host opening one database
+     * per tenant hands every store the SAME {@link RocksTuning} so the cache budget is per-process
+     * rather than per-store. Freeing a shared cache when one store closes would yank it out from
+     * under its co-tenants.
+     */
+    private final boolean ownsTuning;
+
     private volatile @Nullable NodeCache cache; // optional; null = no caching
 
     // When true, read() re-hashes a disk-read node and checks it against the requested key before
@@ -312,6 +323,7 @@ public class RocksNodeStore implements NodeStore, AutoCloseable {
         }
         this.cf = db.getDefaultColumnFamily();
         this.ownsDb = true;
+        this.ownsTuning = true;
         this.writeOptions = new WriteOptions();
         if (bulk) writeOptions.setDisableWAL(true); // bulk load is re-runnable on crash
         this.options = options; // kept alive for the DB's lifetime; closed in close()
@@ -339,10 +351,56 @@ public class RocksNodeStore implements NodeStore, AutoCloseable {
      * closing them; {@link #close()} here releases only this store's own {@code WriteOptions} and
      * pending batch.
      */
+    /**
+     * Open a database at {@code path} whose tuning handles are <b>shared</b> with other stores.
+     *
+     * <p>This is the constructor for a host that opens one database <b>per tenant</b>.
+     * {@link #RocksNodeStore(String)} builds its own block cache and frees it, so a 512 MiB budget
+     * there reserves 512 MiB of off-heap memory <i>per store</i> — unbounded in the tenant count,
+     * and the reason a measured cache-sizing win could not be switched on downstream. Handing every
+     * store the same {@link RocksTuning} makes the budget per-process instead.
+     *
+     * <p><b>Ownership:</b> this store owns its database and its {@code Options}, and does <b>not</b>
+     * own {@code tuning}. The caller closes the tuning, and must do so only after every store built
+     * from it is closed — RocksDB's JNI bindings require these handles to outlive the databases
+     * referencing them.
+     */
+    public RocksNodeStore(String path, RocksTuning tuning) throws RocksDBException {
+        Options options = new Options().setCreateIfMissing(true);
+        tuning.applyTo(options);
+        // Mirrored from the shared tuning for the aggregate native gauges; NOT closed here.
+        this.statistics = null;
+        this.blockCache = tuning.blockCache();
+        this.bloomFilter = null;
+        this.writeBufferManager = null;
+        this.ownsTuning = false;
+        try {
+            this.db = RocksDB.open(options, path);
+        } catch (RuntimeException | RocksDBException e) {
+            options.close();   // the tuning's handles belong to the caller and stay open
+            throw e;
+        }
+        this.cf = db.getDefaultColumnFamily();
+        this.ownsDb = true;
+        this.writeOptions = new WriteOptions();
+        if (tuning.bulk()) writeOptions.setDisableWAL(true); // bulk load is re-runnable on crash
+        this.options = options;
+        try {
+            verifyOrStampStoreFormat(db, cf);
+        } catch (RuntimeException e) {
+            db.close();
+            writeOptions.close();
+            options.close();
+            throw e;
+        }
+        LIVE.add(this);
+    }
+
     public RocksNodeStore(RocksDB db, ColumnFamilyHandle cf) {
         this.db = db;
         this.cf = cf;
         this.ownsDb = false;
+        this.ownsTuning = false;   // shared mode: the owner configured and owns the engine
         this.writeOptions = new WriteOptions();
         this.statistics =
                 null; // shared mode: the owner configures the engine, including statistics
@@ -504,6 +562,19 @@ public class RocksNodeStore implements NodeStore, AutoCloseable {
      */
     public long blockCacheCapacityBytes() {
         return prop("rocksdb.block-cache-capacity");
+    }
+
+    /**
+     * Bytes this store's block cache currently holds. Instance-level companion to
+     * {@link #aggregateBlockCacheBytes()}.
+     * <p>
+     * This is what DISCRIMINATES a shared cache from several equally-sized ones: with a shared
+     * {@link RocksTuning} every store reads the SAME underlying cache, so usage driven by one store
+     * is visible from another. Capacity cannot tell them apart — three stores each with their own
+     * 64 MiB cache report the same 64 MiB as three stores sharing one.
+     */
+    public long blockCacheUsageBytes() {
+        return prop("rocksdb.block-cache-usage");
     }
 
     public long totalSstBytes() {
@@ -912,11 +983,16 @@ public class RocksNodeStore implements NodeStore, AutoCloseable {
         // sub-objects
         // it referenced (statistics / block cache / writeBufferManager), which are closed below.
         if (options != null) options.close();
-        if (statistics != null) statistics.close();
-        // After the DB (which referenced them): release the owned table-format native handles. The
-        // WriteBufferManager references the block cache, so close it before the cache.
-        if (writeBufferManager != null) writeBufferManager.close();
-        if (blockCache != null) blockCache.close();
-        if (bloomFilter != null) bloomFilter.close();
+        // Only when this store OWNS them. Under a shared RocksTuning these handles belong to the
+        // caller and outlive every store built from it, so freeing them here would break co-tenants
+        // (and, on the last store, double-free when the caller closes the tuning).
+        if (ownsTuning) {
+            if (statistics != null) statistics.close();
+            // After the DB (which referenced them): release the owned table-format native handles.
+            // The WriteBufferManager references the block cache, so close it before the cache.
+            if (writeBufferManager != null) writeBufferManager.close();
+            if (blockCache != null) blockCache.close();
+            if (bloomFilter != null) bloomFilter.close();
+        }
     }
 }
