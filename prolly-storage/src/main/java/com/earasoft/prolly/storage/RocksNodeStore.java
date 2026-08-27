@@ -493,6 +493,19 @@ public class RocksNodeStore implements NodeStore, AutoCloseable {
      * rocksdb.total-sst-files-size} property; {@code 0} if unavailable (e.g. the property is
      * disabled or the engine is closing).
      */
+    /**
+     * Capacity of this store's block cache in bytes — what {@code prolly.rocksdb.block-cache.mb}
+     * asked for, or RocksDB's implicit default when unset. Capacity rather than usage: it is what
+     * the caller configured, and is stable regardless of what has been read.
+     *
+     * <p>Added so {@code SharedRocksDbTuningTest} can pin this constructor's interpretation of the
+     * knobs against {@link RocksTuning}'s, which the multi-column-family opener uses. The two must
+     * not drift.
+     */
+    public long blockCacheCapacityBytes() {
+        return prop("rocksdb.block-cache-capacity");
+    }
+
     public long totalSstBytes() {
         return prop("rocksdb.total-sst-files-size");
     }

@@ -67,17 +67,20 @@ public final class SharedRocksDb implements AutoCloseable {
     private final DBOptions dbOptions;
     private final Map<String, ColumnFamilyHandle> handles;
     private final List<ColumnFamilyOptions> cfOptions;
+    private final RocksTuning tuning;
     private boolean closed;
 
     private SharedRocksDb(
             RocksDB db,
             DBOptions dbOptions,
             Map<String, ColumnFamilyHandle> handles,
-            List<ColumnFamilyOptions> cfOptions) {
+            List<ColumnFamilyOptions> cfOptions,
+            RocksTuning tuning) {
         this.db = db;
         this.dbOptions = dbOptions;
         this.handles = handles;
         this.cfOptions = cfOptions;
+        this.tuning = tuning;
     }
 
     /**
@@ -103,10 +106,18 @@ public final class SharedRocksDb implements AutoCloseable {
         }
         names.addAll(extraColumnFamilies);
 
+        // The prolly.rocksdb.* knobs, honoured here exactly as RocksNodeStore(String) honours
+        // them. ONE cache and ONE table config are shared across every family, so N families
+        // share one budget rather than reserving N (RocksTuning's class doc has the reasoning).
+        // Unset properties yield an all-null tuning that applies nothing, so the default path is
+        // unchanged.
+        RocksTuning tuning = RocksTuning.fromSystemProperties();
+
         List<ColumnFamilyDescriptor> descriptors = new ArrayList<>(names.size());
         List<ColumnFamilyOptions> cfOptions = new ArrayList<>(names.size());
         for (String name : names) {
             ColumnFamilyOptions opts = new ColumnFamilyOptions();
+            tuning.applyTo(opts);
             cfOptions.add(opts);
             descriptors.add(
                     new ColumnFamilyDescriptor(name.getBytes(StandardCharsets.UTF_8), opts));
@@ -114,6 +125,7 @@ public final class SharedRocksDb implements AutoCloseable {
 
         DBOptions dbOptions =
                 new DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true);
+        tuning.applyTo(dbOptions);
         List<ColumnFamilyHandle> handleList = new ArrayList<>(names.size());
         try {
             RocksDB db = RocksDB.open(dbOptions, path, descriptors, handleList);
@@ -122,14 +134,15 @@ public final class SharedRocksDb implements AutoCloseable {
             for (String name : names) {
                 handles.put(name, handleList.get(i++));
             }
-            return new SharedRocksDb(db, dbOptions, handles, cfOptions);
+            return new SharedRocksDb(db, dbOptions, handles, cfOptions, tuning);
         } catch (RocksDBException e) {
-            // Open failed — release the option objects we just allocated so a
-            // failed open does not leak native handles.
+            // Open failed — release the option objects and the tuning's native handles we just
+            // allocated so a failed open does not leak native memory.
             dbOptions.close();
             for (ColumnFamilyOptions opts : cfOptions) {
                 opts.close();
             }
+            tuning.close();
             throw e;
         }
     }
@@ -180,5 +193,7 @@ public final class SharedRocksDb implements AutoCloseable {
         for (ColumnFamilyOptions opts : cfOptions) {
             opts.close();
         }
+        // Tuning handles last: the cache/bloom/statistics native peers must outlive the DB.
+        tuning.close();
     }
 }
