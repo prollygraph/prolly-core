@@ -159,7 +159,7 @@ class ReachabilityWalkerTest {
 
             ReachabilityWalker w = new ReachabilityWalker(store);
             w.walk(HashUtils.hash(root.bytes()));
-            Set<String> got = w.getReachableHashes();
+            Set<String> got = w.getReachableHashes().toHexSet();
             for (String h : got) {
                 assertEquals(40, h.length(), "20-byte hash → 40 hex chars");
                 assertTrue(h.matches("[0-9a-f]{40}"), "hex set must be lowercase: " + h);

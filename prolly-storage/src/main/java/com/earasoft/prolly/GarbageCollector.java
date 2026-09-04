@@ -19,7 +19,9 @@
 package com.earasoft.prolly;
 
 import com.dolthub.prolly.*;
+import com.earasoft.prolly.gc.ChunkSet;
 import com.earasoft.prolly.gc.GcReachabilityContributor;
+import com.earasoft.prolly.gc.PackedChunkSet;
 import com.earasoft.prolly.monitor.*;
 import com.earasoft.prolly.pool.*;
 import com.earasoft.prolly.storage.*;
@@ -28,9 +30,7 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.HashSet;
 import java.util.Optional;
-import java.util.Set;
 import org.rocksdb.RocksIterator;
 
 /**
@@ -138,9 +138,9 @@ public class GarbageCollector {
      */
     public static GcResult collectExclusive(
             RocksNodeStore store, java.util.List<GcReachabilityContributor> contributors) {
-        Set<String> reachable = new HashSet<>();
+        ChunkSet reachable = new PackedChunkSet();
         for (GcReachabilityContributor contributor : contributors) {
-            reachable.addAll(contributor.reachableHexes(store));
+            reachable.addAll(contributor.reachable(store));
         }
         return sweep(store, reachable);
     }
@@ -154,7 +154,7 @@ public class GarbageCollector {
      */
     private GcResult collectLocked() {
         ReachabilityWalker walker = new ReachabilityWalker(store);
-        Set<String> reachableCommits = new HashSet<>();
+        ChunkSet reachableCommits = new PackedChunkSet();
         Deque<byte[]> commitQueue = new ArrayDeque<>();
 
         for (String branch : db.listBranches()) {
@@ -164,7 +164,7 @@ public class GarbageCollector {
         while (!commitQueue.isEmpty()) {
             byte[] commitHash = commitQueue.poll();
             if (commitHash == null) continue;
-            if (!reachableCommits.add(toHex(commitHash))) continue;
+            if (!reachableCommits.add(commitHash)) continue;
 
             Optional<MemorySegment> data = store.read(commitHash);
             if (data.isEmpty()) continue;
@@ -178,11 +178,13 @@ public class GarbageCollector {
             }
         }
 
-        Set<String> reachable = new HashSet<>(walker.getReachableHashes());
+        // The walker's set is local to this call and discarded with it, so union INTO it rather
+        // than copying four million hashes to preserve a defensive boundary that has no reader.
+        ChunkSet reachable = walker.getReachableHashes();
         reachable.addAll(reachableCommits);
         // ADR-0074: co-tenant substrates' claimed closures (called under the gc write lock).
         for (GcReachabilityContributor contributor : contributors) {
-            reachable.addAll(contributor.reachableHexes(store));
+            reachable.addAll(contributor.reachable(store));
         }
 
         betweenMarkAndSweep.run(); // test-only seam (R-4 Step 22); no-op in production
@@ -191,12 +193,12 @@ public class GarbageCollector {
     }
 
     /** Delete every unmarked 20-byte key (non-20-byte keys — manifests, meta rows — never). */
-    private static GcResult sweep(RocksNodeStore store, Set<String> reachable) {
+    private static GcResult sweep(RocksNodeStore store, ChunkSet reachable) {
         int swept = 0;
         try (RocksIterator it = store.db().newIterator()) {
             for (it.seekToFirst(); it.isValid(); it.next()) {
                 byte[] key = it.key();
-                if (key.length == 20 && !reachable.contains(toHex(key))) {
+                if (key.length == 20 && !reachable.contains(key)) {
                     store.db().delete(key);
                     swept++;
                 }
@@ -205,11 +207,5 @@ public class GarbageCollector {
             throw new RuntimeException(e);
         }
         return new GcResult(reachable.size(), swept);
-    }
-
-    private static String toHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder();
-        for (byte b : bytes) sb.append(String.format("%02x", b));
-        return sb.toString();
     }
 }

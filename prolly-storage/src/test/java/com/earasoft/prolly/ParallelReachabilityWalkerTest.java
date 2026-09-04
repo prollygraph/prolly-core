@@ -84,7 +84,7 @@ public class ParallelReachabilityWalkerTest {
             // Oracle 1 + 2: serial walker matches hand walk.
             ReachabilityWalker serial = new ReachabilityWalker(store);
             serial.walk(rootHash);
-            Set<String> serialReachable = serial.getReachableHashes();
+            Set<String> serialReachable = serial.getReachableHashes().toHexSet();
             if (!serialReachable.equals(handWalk)) {
                 throw new RuntimeException(
                         "Serial walker disagrees with hand walk: missing="
@@ -97,7 +97,7 @@ public class ParallelReachabilityWalkerTest {
             // Oracle 1: parallel walker matches serial walker.
             ParallelReachabilityWalker parallel = new ParallelReachabilityWalker(store);
             parallel.walk(rootHash);
-            Set<String> parallelReachable = parallel.getReachableHashes();
+            Set<String> parallelReachable = parallel.getReachableHashes().toHexSet();
             if (!parallelReachable.equals(serialReachable)) {
                 throw new RuntimeException(
                         "Parallel walker disagrees with serial: missing="

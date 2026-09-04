@@ -142,7 +142,7 @@ final class FileNodeStoreGcReachabilityTest {
                 walker.walk(commit.getRootValueHash());
             }
         }
-        reachable.addAll(walker.getReachableHashes());
+        reachable.addAll(walker.getReachableHashes().toHexSet());
         return reachable;
     }
 

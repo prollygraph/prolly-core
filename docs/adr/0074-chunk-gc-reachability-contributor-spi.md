@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-07-16. Guides the upstream chunk-GC plan. Canonical copy lives in the
+Accepted, 2026-07-16. **AMENDED 2026-09-04 by [ADR-prolly-core-0076](0076-chunk-sets-are-keyed-by-bytes-not-hex.md)** (id `ADR-20260904-27f3`): the SPI method below is now `ChunkSet reachable(NodeStore)`, not `Set<String> reachableHexes(NodeStore)`. The decision this record makes — that co-tenant substrates claim their own closures and the collector unions them before sweeping — is unchanged; only the type crossing the boundary is. Read the signature in this document as historical. Guides the upstream chunk-GC plan. Canonical copy lives in the
 engine repo (the deciding layer); mirrored into the RDF ring's series because the
 decision creates an obligation there (the RDF face must ship its contributor before any
 garbage collection runs on a store it shares).

@@ -15,13 +15,12 @@
  */
 package com.earasoft.prolly.sync;
 
-import com.dolthub.prolly.HashUtils;
 import com.dolthub.prolly.Node;
 import com.dolthub.prolly.NodeStore;
+import com.earasoft.prolly.gc.ChunkSet;
+import com.earasoft.prolly.gc.PackedChunkSet;
 import java.lang.foreign.MemorySegment;
-import java.util.HashSet;
 import java.util.Objects;
-import java.util.Set;
 
 /**
  * The generic prolly-tree Merkle reachability walk — every node chunk reachable from a tree root,
@@ -43,8 +42,8 @@ public final class DataTreeReachability {
      * Hex hashes of every tree chunk reachable from {@code rootHash}, minus anything in {@code
      * excluded} (a Merkle skip — an excluded hash prunes its whole subtree).
      */
-    public static Set<String> fromRoot(NodeStore store, byte[] rootHash, Set<String> excluded) {
-        Set<String> out = new HashSet<>();
+    public static ChunkSet fromRoot(NodeStore store, byte[] rootHash, ChunkSet excluded) {
+        ChunkSet out = new PackedChunkSet();
         collectInto(store, rootHash, out, excluded);
         return out;
     }
@@ -55,10 +54,8 @@ public final class DataTreeReachability {
      * accumulating set — an upstream reachability walker's per-table loop — shares the seen set
      * across roots instead of merging per-root copies.
      */
-    public static void collectInto(
-            NodeStore store, byte[] hash, Set<String> out, Set<String> excluded) {
-        String hex = HashUtils.toHex(hash);
-        if (excluded.contains(hex) || !out.add(hex)) {
+    public static void collectInto(NodeStore store, byte[] hash, ChunkSet out, ChunkSet excluded) {
+        if (excluded.contains(hash) || !out.add(hash)) {
             return;
         }
         MemorySegment seg =
@@ -66,7 +63,9 @@ public final class DataTreeReachability {
                         .orElseThrow(
                                 () ->
                                         new IllegalStateException(
-                                                "chunk missing from store: " + hex));
+                                                "chunk missing from store: "
+                                                        + com.dolthub.prolly.HashUtils.toHex(
+                                                                hash)));
         Node node = Objects.requireNonNull(Node.fromBytes(seg));
         if (!node.isLeaf()) {
             for (int i = 0; i < node.count(); i++) {

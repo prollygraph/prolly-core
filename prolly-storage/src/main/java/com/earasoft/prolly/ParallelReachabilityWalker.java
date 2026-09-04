@@ -16,6 +16,8 @@
 package com.earasoft.prolly;
 
 import com.dolthub.prolly.*;
+import com.earasoft.prolly.gc.ChunkSet;
+import com.earasoft.prolly.gc.ConcurrentChunkSet;
 import com.earasoft.prolly.monitor.*;
 import com.earasoft.prolly.pool.*;
 import com.earasoft.prolly.storage.*;
@@ -23,8 +25,6 @@ import com.earasoft.prolly.sync.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RecursiveAction;
 
@@ -38,7 +38,7 @@ import java.util.concurrent.RecursiveAction;
  */
 public class ParallelReachabilityWalker {
     private final NodeStore store;
-    private final Set<String> reachable = ConcurrentHashMap.newKeySet();
+    private final ChunkSet reachable = new ConcurrentChunkSet();
 
     public ParallelReachabilityWalker(NodeStore store) {
         this.store = store;
@@ -61,7 +61,7 @@ public class ParallelReachabilityWalker {
         ForkJoinPool.commonPool().invoke(new WalkTask(rootHash));
     }
 
-    public Set<String> getReachableHashes() {
+    public ChunkSet getReachableHashes() {
         return reachable;
     }
 
@@ -75,8 +75,7 @@ public class ParallelReachabilityWalker {
         @Override
         protected void compute() {
             if (hash == null) return;
-            String hex = toHex(hash);
-            if (!reachable.add(hex)) return;
+            if (!reachable.add(hash)) return;
 
             store.read(hash)
                     .ifPresent(
@@ -99,11 +98,5 @@ public class ParallelReachabilityWalker {
                                 }
                             });
         }
-    }
-
-    private static String toHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder();
-        for (byte b : bytes) sb.append(String.format("%02x", b));
-        return sb.toString();
     }
 }

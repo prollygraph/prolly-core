@@ -119,8 +119,8 @@ class ParallelReachabilityWalkerUnitTest {
             parallel.walk(rootHash);
 
             assertEquals(
-                    serial.getReachableHashes(),
-                    parallel.getReachableHashes(),
+                    serial.getReachableHashes().toHexSet(),
+                    parallel.getReachableHashes().toHexSet(),
                     "serial and parallel walks must produce the SAME reachable set");
         }
     }
@@ -169,7 +169,7 @@ class ParallelReachabilityWalkerUnitTest {
             store.write(root.bytes());
             ParallelReachabilityWalker w = new ParallelReachabilityWalker(store);
             w.walk(rootHash);
-            for (String h : w.getReachableHashes()) {
+            for (String h : w.getReachableHashes().toHexSet()) {
                 assertEquals(40, h.length());
                 assertTrue(h.matches("[0-9a-f]{40}"), "hex must be lowercase: " + h);
             }

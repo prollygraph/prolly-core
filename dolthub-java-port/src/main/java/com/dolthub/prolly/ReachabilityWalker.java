@@ -18,13 +18,13 @@
  */
 package com.dolthub.prolly;
 
+import com.earasoft.prolly.gc.ChunkSet;
+import com.earasoft.prolly.gc.PackedChunkSet;
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 
 /**
  * Collects every node hash reachable from a given root by walking the content-addressed tree.
@@ -51,7 +51,7 @@ import java.util.Set;
  */
 public class ReachabilityWalker {
     private final NodeStore store;
-    private final Set<String> reachable = new HashSet<>();
+    private final ChunkSet reachable = new PackedChunkSet();
 
     public ReachabilityWalker(NodeStore store) {
         this.store = store;
@@ -64,8 +64,7 @@ public class ReachabilityWalker {
         while (!stack.isEmpty()) {
             byte[] hash = stack.pop();
             if (hash == null) continue;
-            String hex = toHex(hash);
-            if (!reachable.add(hex)) continue;
+            if (!reachable.add(hash)) continue;
 
             Optional<MemorySegment> data = store.read(hash);
             if (data.isEmpty()) continue;
@@ -81,13 +80,7 @@ public class ReachabilityWalker {
         }
     }
 
-    public Set<String> getReachableHashes() {
+    public ChunkSet getReachableHashes() {
         return reachable;
-    }
-
-    private static String toHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder();
-        for (byte b : bytes) sb.append(String.format("%02x", b));
-        return sb.toString();
     }
 }

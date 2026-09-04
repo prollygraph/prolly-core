@@ -19,6 +19,8 @@ import com.dolthub.prolly.Commit;
 import com.dolthub.prolly.HashUtils;
 import com.dolthub.prolly.NodeStore;
 import com.earasoft.prolly.Database;
+import com.earasoft.prolly.gc.ChunkSet;
+import com.earasoft.prolly.gc.PackedChunkSet;
 import java.lang.foreign.ValueLayout;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -95,7 +97,7 @@ public final class DatabasePackSync {
 
         // 2. Merkle prune: chunks reachable from the have commits we actually hold contribute
         //    nothing new (a have we do not hold simply cannot prune).
-        Set<String> covered = new HashSet<>();
+        ChunkSet covered = new PackedChunkSet();
         for (String haveHex : haveCommitHexes) {
             byte[] haveHash = HashUtils.fromHex(haveHex);
             store.read(haveHash)
@@ -105,7 +107,7 @@ public final class DatabasePackSync {
                                 if (c.getRootValueHash() != null) {
                                     covered.addAll(
                                             DataTreeReachability.fromRoot(
-                                                    store, c.getRootValueHash(), Set.of()));
+                                                    store, c.getRootValueHash(), ChunkSet.EMPTY));
                                 }
                             });
         }
@@ -116,13 +118,20 @@ public final class DatabasePackSync {
             chunks.put(HashUtils.toHex(h), readBytes(store, h));
             Commit c = readCommit(store, h);
             if (c.getRootValueHash() != null) {
-                for (String hex :
-                        DataTreeReachability.fromRoot(store, c.getRootValueHash(), covered)) {
-                    if (!chunks.containsKey(hex)) {
-                        chunks.put(hex, readBytes(store, HashUtils.fromHex(hex)));
-                    }
-                }
-                covered.addAll(chunks.keySet());
+                // fromRoot returns only what `covered` did not already prune, so the fresh set
+                // IS the increment — union it back rather than re-deriving the increment from
+                // chunks.keySet(). The keys that drops are the commit blobs put above, and a tree
+                // walk cannot reach a commit hash, so excluding them was inert.
+                ChunkSet fresh =
+                        DataTreeReachability.fromRoot(store, c.getRootValueHash(), covered);
+                fresh.forEach(
+                        chunkHash -> {
+                            String hex = HashUtils.toHex(chunkHash);
+                            if (!chunks.containsKey(hex)) {
+                                chunks.put(hex, readBytes(store, chunkHash));
+                            }
+                        });
+                covered.addAll(fresh);
             }
         }
         return new PackAndHead(new SyncPack(new ArrayList<>(chunks.values()), List.of()), head);
@@ -182,7 +191,7 @@ public final class DatabasePackSync {
         Commit head = readCommit(store, newHead);
         if (head.getRootValueHash() != null) {
             try {
-                DataTreeReachability.fromRoot(store, head.getRootValueHash(), Set.of());
+                DataTreeReachability.fromRoot(store, head.getRootValueHash(), ChunkSet.EMPTY);
             } catch (IllegalStateException missing) {
                 throw new IllegalStateException(
                         "torn sync pack: the head state's tree closure is incomplete — "

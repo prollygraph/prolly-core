@@ -16,7 +16,6 @@
 package com.earasoft.prolly.gc;
 
 import com.dolthub.prolly.NodeStore;
-import java.util.Set;
 
 /**
  * A substrate's claim on chunks the engine commit graph cannot see — the extension point that
@@ -45,5 +44,5 @@ public interface GcReachabilityContributor {
      * Every chunk (hex content-address) this substrate holds live outside the engine commit graph —
      * roots AND their full transitive closures.
      */
-    Set<String> reachableHexes(NodeStore store);
+    ChunkSet reachable(NodeStore store);
 }
